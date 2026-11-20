@@ -92,6 +92,7 @@ export interface ProjectInfo {
   hasIntegrationTest: boolean;
   packageId?: string;
   specFiles: string[];
+  declaredPermissions: string[];
 }
 
 export interface DoctorReport {
@@ -123,6 +124,12 @@ export interface FlutterTestRunInput {
   testTimeout?: number;
   artifactsDir?: string;
   screenshotIntervalMs?: number;
+  /**
+   * Permission policy for apps that declare Sailjail permissions.
+   * - `fail` (default): return PERMISSIONS_REQUIRE_GRANT before launching.
+   * - `allow_prompt`: run anyway; an external user must answer the system dialog.
+   */
+  permissionPolicy?: "fail" | "allow_prompt";
 }
 
 export interface ValidatedTestRunInput extends FlutterTestRunInput {
@@ -183,6 +190,22 @@ export interface CleanupStatus {
   packagePresentAfterRun?: boolean;
 }
 
+export interface PermissionState {
+  applicationId: string;
+  uid: number;
+  declared: string[];
+  granted: string[];
+  showPrompt: boolean;
+  mode?: string;
+  alwaysAllowed?: boolean | null;
+}
+
+export interface GrantPermissionsOptions {
+  permissions?: string[];
+  allRequested?: boolean;
+  disablePrompt?: boolean;
+}
+
 export interface FlutterTestResult {
   schemaVersion: 1;
   ok: boolean;
@@ -204,6 +227,8 @@ export interface FlutterTestResult {
   artifactErrors: ArtifactError[];
   artifacts: ArtifactPaths;
   cleanup?: CleanupStatus;
+  declaredPermissions?: string[];
+  permissionPolicy?: "fail" | "allow_prompt";
   reporterWarnings?: string[];
   versions?: {
     flutter?: FlutterVersion;

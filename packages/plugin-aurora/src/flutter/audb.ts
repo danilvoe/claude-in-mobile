@@ -11,7 +11,11 @@ import { runCommand } from "./flutter-cli.js";
 import type { CommandExecutor, CommandResult } from "./flutter-cli.js";
 import { FlutterError } from "./errors.js";
 import { redactDeep, redactSecrets } from "./redact.js";
-import type { AudbDeviceRecord } from "./types.js";
+import type {
+  AudbDeviceRecord,
+  GrantPermissionsOptions,
+  PermissionState,
+} from "./types.js";
 
 export interface AudbCliOptions {
   binary?: string;
@@ -145,5 +149,94 @@ export class AudbCli {
     args.push("--since", since);
     const data = await this.json<{ events?: unknown[] }>(deviceId, args);
     return Array.isArray(data.events) ? data.events : [];
+  }
+
+  private validateApplicationId(applicationId: string): void {
+    if (!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,254}$/.test(applicationId)) {
+      throw new FlutterError(
+        `Invalid Sailjail application ID: ${applicationId}`,
+        "INVALID_ARGUMENT",
+      );
+    }
+  }
+
+  async permissionList(
+    deviceId: string,
+    applicationId: string,
+  ): Promise<PermissionState> {
+    this.validateApplicationId(applicationId);
+    return this.json<PermissionState>(deviceId, [
+      "permission",
+      "list",
+      applicationId,
+    ]);
+  }
+
+  async permissionGrant(
+    deviceId: string,
+    applicationId: string,
+    options: GrantPermissionsOptions = {},
+  ): Promise<unknown> {
+    this.validateApplicationId(applicationId);
+    const permissions = options.permissions ?? [];
+    if (options.allRequested && permissions.length > 0) {
+      throw new FlutterError(
+        "Specify permissions or allRequested=true, but not both.",
+        "INVALID_ARGUMENT",
+      );
+    }
+    if (!options.allRequested && permissions.length === 0) {
+      throw new FlutterError(
+        "Specify at least one permission or allRequested=true.",
+        "INVALID_ARGUMENT",
+      );
+    }
+    const args = ["permission", "grant", applicationId];
+    if (options.allRequested) args.push("--all-requested");
+    else args.push(...permissions);
+    if (options.disablePrompt) args.push("--disable-prompt");
+    return this.json(deviceId, args);
+  }
+
+  async permissionRevoke(
+    deviceId: string,
+    applicationId: string,
+    permissions: string[],
+  ): Promise<unknown> {
+    this.validateApplicationId(applicationId);
+    if (permissions.length === 0) {
+      throw new FlutterError(
+        "At least one permission is required for revoke.",
+        "INVALID_ARGUMENT",
+      );
+    }
+    return this.json(deviceId, [
+      "permission",
+      "revoke",
+      applicationId,
+      ...permissions,
+    ]);
+  }
+
+  async permissionReset(
+    deviceId: string,
+    applicationId: string,
+  ): Promise<unknown> {
+    this.validateApplicationId(applicationId);
+    return this.json(deviceId, ["permission", "reset", applicationId]);
+  }
+
+  async permissionPrompt(
+    deviceId: string,
+    applicationId: string,
+    enabled: boolean,
+  ): Promise<unknown> {
+    this.validateApplicationId(applicationId);
+    return this.json(deviceId, [
+      "permission",
+      "prompt",
+      applicationId,
+      enabled ? "--enable" : "--disable",
+    ]);
   }
 }

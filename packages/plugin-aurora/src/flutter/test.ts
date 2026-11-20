@@ -34,6 +34,8 @@ import type {
   FlutterTestResult,
   FlutterTestRunInput,
   FlutterVersion,
+  GrantPermissionsOptions,
+  PermissionState,
   ProjectInfo,
   ReporterSummary,
   RunStatus,
@@ -150,6 +152,36 @@ export function detectPackageId(projectPath: string, pubspec?: string): string |
   return PACKAGE_ID_RE.test(packageId) ? packageId : undefined;
 }
 
+function parseDeclaredPermissions(projectPath: string): string[] {
+  const desktopDir = join(projectPath, "aurora", "desktop");
+  if (!pathExists(desktopDir)) return [];
+  const permissions = new Set<string>();
+  for (const entry of readdirSync(desktopDir)) {
+    if (!entry.endsWith(".desktop")) continue;
+    try {
+      const text = readFileSync(join(desktopDir, entry), "utf8");
+      let section = "";
+      for (const line of text.split(/\r?\n/)) {
+        const header = line.match(/^\s*\[([^\]]+)\]\s*$/);
+        if (header) {
+          section = header[1]!.trim();
+          continue;
+        }
+        if (section !== "X-Application") continue;
+        const value = line.match(/^\s*Permissions\s*=\s*(.*)$/);
+        if (!value) continue;
+        for (const permission of value[1]!.split(";")) {
+          const trimmed = permission.trim();
+          if (trimmed) permissions.add(trimmed);
+        }
+      }
+    } catch {
+      // ignore unreadable desktop files
+    }
+  }
+  return [...permissions].sort();
+}
+
 export function inspectProject(projectPath: string): ProjectInfo {
   const pubspecPath = join(projectPath, "pubspec.yaml");
   if (!pathExists(pubspecPath)) {
@@ -170,6 +202,7 @@ export function inspectProject(projectPath: string): ProjectInfo {
     hasIntegrationTest: hasDevDependency(pubspec, "integration_test"),
     packageId: detectPackageId(projectPath, pubspec),
     specFiles,
+    declaredPermissions: parseDeclaredPermissions(projectPath),
   };
 }
 
@@ -377,6 +410,7 @@ export class FlutterTestController {
 
     let flutterDeviceId = "";
     let packageId: string | undefined;
+    let declaredPermissions: string[] = [];
     let version: FlutterVersion | undefined;
     let audbVersion: string | undefined;
     let command: CommandResult | undefined;
@@ -405,6 +439,17 @@ export class FlutterTestController {
         );
       }
       packageId = project.packageId;
+      declaredPermissions = project.declaredPermissions;
+
+      if (declaredPermissions.length > 0 && validated.permissionPolicy !== "allow_prompt") {
+        throw new FlutterError(
+          `Project declares Sailjail permissions (${declaredPermissions.join(", ")}). `
+            + "flutter_test reinstall resets grants, so an unattended run would block on the system permission dialog. "
+            + "Use flutter_permissions to inspect/grant after install, or set permissionPolicy=\"allow_prompt\" "
+            + "to run with an externally answered dialog.",
+          "PERMISSIONS_REQUIRE_GRANT",
+        );
+      }
 
       version = await flutter.version();
       audbVersion = await this.audb.version().catch(() => undefined);
@@ -562,7 +607,9 @@ export class FlutterTestController {
       runStatus = "tool_error";
       error = { code: "FLUTTER_COMMAND_FAILED", message: redactSecrets(command.spawnError) };
     } else if (earlyError) {
-      runStatus = earlyError.code === "FLUTTER_NOT_FOUND" || earlyError.code === "AUDB_NOT_FOUND"
+      runStatus = earlyError.code === "FLUTTER_NOT_FOUND"
+        || earlyError.code === "AUDB_NOT_FOUND"
+        || earlyError.code === "PERMISSIONS_REQUIRE_GRANT"
         ? "tool_error"
         : "internal_error";
     } else if (!finalized || !finalized.complete) {
@@ -681,6 +728,8 @@ export class FlutterTestController {
       artifactErrors: collector.errors,
       artifacts,
       cleanup,
+      declaredPermissions,
+      permissionPolicy: validated.permissionPolicy ?? "fail",
       reporterWarnings,
       versions: { flutter: version, audb: audbVersion },
       error,
@@ -853,6 +902,11 @@ export class FlutterTestController {
         if (!project.hasIntegrationTest) warnings.push("integration_test is missing from dev_dependencies.");
         if (project.specFiles.length === 0) warnings.push("aurora/rpm/*.spec was not found.");
         if (!project.packageId) warnings.push("Package ID could not be derived from the project.");
+        if (project.declaredPermissions.length > 0) {
+          warnings.push(
+            `Project declares Sailjail permissions (${project.declaredPermissions.join(", ")}). flutter_test defaults to PERMISSIONS_REQUIRE_GRANT because reinstall resets grants; use flutter_permissions after install or permissionPolicy="allow_prompt".`,
+          );
+        }
       } catch (error) {
         checks.push({
           name: "project",
@@ -869,6 +923,61 @@ export class FlutterTestController {
   async devices(options: { deviceId?: string; flutterPath?: string } = {}): Promise<DevicesReport> {
     const resolver = new DeviceResolver(this.flutterFor(options.flutterPath), this.audb);
     return resolver.list(options.deviceId ? { deviceId: options.deviceId } : {});
+  }
+
+  /** Read Sailjail permission state for an installed application. */
+  async permissionState(
+    deviceId: string,
+    applicationId: string,
+  ): Promise<PermissionState> {
+    return this.audb.permissionList(deviceId, applicationId);
+  }
+
+  /** Grant declared Sailjail permissions and return before/after state. */
+  async grantPermissions(
+    deviceId: string,
+    applicationId: string,
+    options: GrantPermissionsOptions,
+  ): Promise<{ before: PermissionState; after: PermissionState }> {
+    const before = await this.audb.permissionList(deviceId, applicationId);
+    await this.audb.permissionGrant(deviceId, applicationId, options);
+    const after = await this.audb.permissionList(deviceId, applicationId);
+    return { before, after };
+  }
+
+  /** Clear saved grants and re-enable the system dialog. */
+  async resetPermissions(
+    deviceId: string,
+    applicationId: string,
+  ): Promise<{ before: PermissionState; after: PermissionState }> {
+    const before = await this.audb.permissionList(deviceId, applicationId);
+    await this.audb.permissionReset(deviceId, applicationId);
+    const after = await this.audb.permissionList(deviceId, applicationId);
+    return { before, after };
+  }
+
+  /** Remove selected saved grants without changing the dialog policy. */
+  async revokePermissions(
+    deviceId: string,
+    applicationId: string,
+    permissions: string[],
+  ): Promise<{ before: PermissionState; after: PermissionState }> {
+    const before = await this.audb.permissionList(deviceId, applicationId);
+    await this.audb.permissionRevoke(deviceId, applicationId, permissions);
+    const after = await this.audb.permissionList(deviceId, applicationId);
+    return { before, after };
+  }
+
+  /** Enable (clears grants) or disable (preserves grants) the system dialog. */
+  async setPermissionPrompt(
+    deviceId: string,
+    applicationId: string,
+    enabled: boolean,
+  ): Promise<{ before: PermissionState; after: PermissionState }> {
+    const before = await this.audb.permissionList(deviceId, applicationId);
+    await this.audb.permissionPrompt(deviceId, applicationId, enabled);
+    const after = await this.audb.permissionList(deviceId, applicationId);
+    return { before, after };
   }
 
   /** Cancel all active runs and release resources. Idempotent. */

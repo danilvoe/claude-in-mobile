@@ -14,7 +14,12 @@ import { join } from "node:path";
 import { AudbCli } from "./audb.js";
 import { FlutterCli } from "./flutter-cli.js";
 import type { CommandExecutor, CommandResult, RunCommandOptions } from "./flutter-cli.js";
-import { FlutterTestController, formatJournalSince, isRealTestStart } from "./test.js";
+import {
+  FlutterTestController,
+  formatJournalSince,
+  inspectProject,
+  isRealTestStart,
+} from "./test.js";
 import { commandResult, makeExecutor } from "./test-fixtures.js";
 
 const FLUTTER_DEVICES = [
@@ -72,6 +77,7 @@ interface HarnessOptions {
     writeEvents: (events: unknown[]) => void,
   ) => Promise<Partial<CommandResult>>;
   screenshotFails?: boolean;
+  permissions?: string[];
 }
 
 function createHarness(options: HarnessOptions = {}) {
@@ -98,10 +104,18 @@ function createHarness(options: HarnessOptions = {}) {
   writeFileSync(join(project, "integration_test", "smoke_test.dart"), "void main() {}\n");
   writeFileSync(
     join(project, "aurora", "desktop", "ru.audb.fixture.fixture.desktop"),
-    "[Desktop Entry]\nExec=/usr/bin/ru.audb.fixture.fixture\n",
+    [
+      "[Desktop Entry]",
+      "Exec=/usr/bin/ru.audb.fixture.fixture",
+      "",
+      "[X-Application]",
+      `Permissions=${(options.permissions ?? []).join(";")}`,
+      "",
+    ].join("\n"),
   );
 
   let packageInstalled = true;
+  let testCommandCalls = 0;
 
   const flutterExecutor: CommandExecutor = async (command, args, runOptions) => {
     if (args.includes("devices") && args.includes("--machine")) {
@@ -120,6 +134,7 @@ function createHarness(options: HarnessOptions = {}) {
       return commandResult({ stdout: "doctor ok" });
     }
     if (args[0] === "test") {
+      testCommandCalls += 1;
       const fileReporter = args.find((arg) => arg.startsWith("--file-reporter=json:"));
       let capturedStdout = "";
       const writeEvents = (events: unknown[]): string => {
@@ -194,6 +209,7 @@ function createHarness(options: HarnessOptions = {}) {
     setPackageInstalled: (value: boolean) => {
       packageInstalled = value;
     },
+    getTestCommandCalls: () => testCommandCalls,
   };
 }
 
@@ -204,6 +220,18 @@ describe("run helpers", () => {
     const value = formatJournalSince(new Date(2026, 10, 20, 9, 5, 7));
     expect(value).toMatch(/^@\d+$/);
     expect(value).toBe(`@${Math.floor(new Date(2026, 10, 20, 9, 5, 7).getTime() / 1000)}`);
+  });
+
+  it("parses declared Sailjail permissions from [X-Application]", () => {
+    const local = createHarness({ permissions: ["UserDirs", "Internet"] });
+    try {
+      expect(inspectProject(local.project).declaredPermissions).toEqual([
+        "Internet",
+        "UserDirs",
+      ]);
+    } finally {
+      rmSync(local.project, { recursive: true, force: true });
+    }
   });
 
   it("ignores the synthetic loading test when starting periodic screenshots", () => {
@@ -443,6 +471,53 @@ describe("FlutterTestController", () => {
       expect(result.ok).toBe(true);
       expect(result.artifactsComplete).toBe(false);
       expect(result.artifactErrors.some((item) => item.artifact.startsWith("screenshot"))).toBe(true);
+    } finally {
+      await local.controller.dispose();
+      rmSync(local.project, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when the project declares Sailjail permissions", async () => {
+    const local = createHarness({ permissions: ["UserDirs", "Internet"] });
+    activeHarnesses.push(local);
+    try {
+      const result = await local.controller.run({
+        projectPath: local.project,
+        testPath: "integration_test/smoke_test.dart",
+        deviceId: "emulator",
+        runTimeoutMs: 30_000,
+        screenshotIntervalMs: 0,
+      });
+      expect(result.ok).toBe(false);
+      expect(result.runStatus).toBe("tool_error");
+      expect(result.testStatus).toBe("not_run");
+      expect(result.exitCode).toBeNull();
+      expect(result.declaredPermissions).toEqual(["Internet", "UserDirs"]);
+      expect(result.error?.code).toBe("PERMISSIONS_REQUIRE_GRANT");
+      expect(local.getTestCommandCalls()).toBe(0);
+      expect(statSync(result.artifacts.resultJson).isFile()).toBe(true);
+    } finally {
+      await local.controller.dispose();
+      rmSync(local.project, { recursive: true, force: true });
+    }
+  });
+
+  it("runs a permission-declaring project when permissionPolicy is allow_prompt", async () => {
+    const local = createHarness({ permissions: ["UserDirs"] });
+    activeHarnesses.push(local);
+    try {
+      const result = await local.controller.run({
+        projectPath: local.project,
+        testPath: "integration_test/smoke_test.dart",
+        deviceId: "emulator",
+        runTimeoutMs: 30_000,
+        screenshotIntervalMs: 0,
+        permissionPolicy: "allow_prompt",
+      });
+      expect(result.ok).toBe(true);
+      expect(result.permissionPolicy).toBe("allow_prompt");
+      expect(result.declaredPermissions).toEqual(["UserDirs"]);
+      expect(local.getTestCommandCalls()).toBe(1);
     } finally {
       await local.controller.dispose();
       rmSync(local.project, { recursive: true, force: true });

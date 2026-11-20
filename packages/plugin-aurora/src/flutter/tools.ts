@@ -150,6 +150,12 @@ const testTool = makeTool({
       .max(600_000)
       .default(5_000)
       .describe("Periodic screenshot interval in ms after the first testStart; 0 disables periodic capture."),
+    permissionPolicy: z
+      .enum(["fail", "allow_prompt"])
+      .default("fail")
+      .describe(
+        "For apps that declare Sailjail permissions: fail (default) returns PERMISSIONS_REQUIRE_GRANT before launching; allow_prompt runs and requires an external answer to the system dialog.",
+      ),
     flutterPath,
   }),
   handler: async (args, controller) => {
@@ -162,9 +168,94 @@ const testTool = makeTool({
         testTimeout: args.testTimeout,
         artifactsDir: args.artifactsDir,
         screenshotIntervalMs: args.screenshotIntervalMs,
+        permissionPolicy: args.permissionPolicy,
       },
       { flutterPath: args.flutterPath },
     );
+  },
+});
+
+const permissionsTool = makeTool({
+  name: "flutter_permissions",
+  description:
+    "Read or change Sailjail permissions for an installed Aurora application through audb-agent. list returns declared/granted permissions and dialog state; grant/reset/revoke/prompt mutate the same state. The application must already be installed. flutter_test reinstall resets grants, so permission-declaring apps need an explicit pre-install/grant workflow or permissionPolicy='allow_prompt'.",
+  schema: z.object({
+    deviceId,
+    applicationId: z
+      .string()
+      .min(1)
+      .max(255)
+      .describe("Sailjail application ID, usually the .desktop/RPM package ID (for example ru.example.app)."),
+    action: z
+      .enum(["list", "grant", "reset", "revoke", "prompt"])
+      .describe("Permission operation to perform."),
+    permissions: z
+      .array(z.string().min(1).max(128))
+      .max(256)
+      .optional()
+      .describe("Permission names for grant/revoke. Omit for list/reset/prompt."),
+    allRequested: z
+      .boolean()
+      .default(false)
+      .describe("For grant: grant every permission declared in the .desktop file."),
+    disablePrompt: z
+      .boolean()
+      .default(true)
+      .describe("For grant: disable the system dialog while granting (required when the dialog is enabled)."),
+    promptEnabled: z
+      .boolean()
+      .optional()
+      .describe("For prompt: true enables the dialog and clears grants; false disables it and preserves grants."),
+  }),
+  handler: async (args, controller) => {
+    if (args.action === "list") {
+      const state = await controller.permissionState(args.deviceId, args.applicationId);
+      return { ok: true, action: "list", state };
+    }
+    if (args.action === "grant") {
+      return {
+        ok: true,
+        action: "grant",
+        ...(await controller.grantPermissions(args.deviceId, args.applicationId, {
+          permissions: args.permissions,
+          allRequested: args.allRequested,
+          disablePrompt: args.disablePrompt,
+        })),
+      };
+    }
+    if (args.action === "reset") {
+      return {
+        ok: true,
+        action: "reset",
+        ...(await controller.resetPermissions(args.deviceId, args.applicationId)),
+      };
+    }
+    if (args.action === "revoke") {
+      return {
+        ok: true,
+        action: "revoke",
+        ...(await controller.revokePermissions(
+          args.deviceId,
+          args.applicationId,
+          args.permissions ?? [],
+        )),
+      };
+    }
+    if (typeof args.promptEnabled !== "boolean") {
+      throw new FlutterError(
+        "promptEnabled is required for action='prompt'.",
+        "INVALID_ARGUMENT",
+      );
+    }
+    return {
+      ok: true,
+      action: "prompt",
+      ...(await controller.setPermissionPrompt(
+        args.deviceId,
+        args.applicationId,
+        args.promptEnabled,
+      )),
+    };
   },
 });
 
@@ -174,5 +265,6 @@ export function buildFlutterTools(controller: FlutterTestController): ToolDefini
     doctorTool(controller),
     devicesTool(controller),
     testTool(controller),
+    permissionsTool(controller),
   ];
 }

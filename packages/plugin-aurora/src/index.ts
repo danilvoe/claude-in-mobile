@@ -24,7 +24,7 @@ export const AURORA_PLUGIN_MANIFEST: PluginManifest = {
   version: "4.4.1",
   apiVersion: "1",
   capabilities: ["screen", "input", "ui", "shell", "appLifecycle", "logs", "fileTransfer", "deviceMgmt"],
-  tools: ["flutter_doctor", "flutter_devices", "flutter_test"],
+  tools: ["flutter_doctor", "flutter_devices", "flutter_test", "flutter_permissions"],
   description:
     "Aurora OS automation via audb (screen, input, app lifecycle, shell, logs) plus Flutter/QEMU test orchestration",
 };
