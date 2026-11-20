@@ -64,7 +64,11 @@ export async function writeFileAtomic(
   let handle: FileHandle | undefined;
   try {
     handle = await open(partialPath, "wx", mode);
-    await handle.writeFile(data);
+    await handle.writeFile(
+      typeof data === "string" || Buffer.isBuffer(data)
+        ? data
+        : new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+    );
     await handle.sync();
     await handle.close();
     handle = undefined;
