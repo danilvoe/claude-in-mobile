@@ -40,7 +40,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AlexGladkov/claude-in-mobile.git",
+    "url": "git+https://github.com/danilvoe/claude-in-mobile.git",
     "directory": "packages/plugin-android"
   }
 }

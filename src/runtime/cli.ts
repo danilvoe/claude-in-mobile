@@ -64,7 +64,7 @@ Environment
                                  (default: mcp-devices-cli)
 
 Docs
-  https://github.com/AlexGladkov/claude-in-mobile
+  https://github.com/danilvoe/claude-in-mobile
 `);
     process.exit(0);
   }

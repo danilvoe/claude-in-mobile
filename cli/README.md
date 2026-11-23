@@ -12,7 +12,7 @@ brew install AlexGladkov/tap/mcp-devices
 
 ### From release binary
 
-Download from [Releases](https://github.com/AlexGladkov/claude-in-mobile/releases):
+Download from [Releases](https://github.com/danilvoe/claude-in-mobile/releases):
 
 ```bash
 # macOS ARM64 (Apple Silicon)
@@ -92,7 +92,7 @@ After installing the plugin, Claude Code can:
 Install from the GitHub marketplace so Grok gets the CLI skill **and** the MCP server `mobile`:
 
 ```bash
-grok plugin marketplace add AlexGladkov/claude-in-mobile
+grok plugin marketplace add danilvoe/claude-in-mobile
 grok plugin install mcp-devices --trust
 ```
 

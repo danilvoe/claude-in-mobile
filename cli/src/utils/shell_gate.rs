@@ -8,7 +8,7 @@
 //! callsite inside a CI pipeline can pivot from "automate my emulator" to
 //! "exfiltrate device data" with a single line.
 //!
-//! Per issue [#41](https://github.com/AlexGladkov/claude-in-mobile/issues/41)
+//! Per issue [#41](https://github.com/danilvoe/claude-in-mobile/issues/41)
 //! this gate disables the subcommand in non-interactive contexts unless the
 //! caller explicitly opts in. The gate is intentionally permissive in
 //! interactive shells (developer at a TTY) and strict everywhere else (CI,
@@ -98,7 +98,7 @@ pub fn check_shell_allowed_with(flag: bool, env_allow: bool, interactive: bool) 
          \n\
          Run interactively from a terminal to bypass this check automatically.\n\
          \n\
-         Refs: https://github.com/AlexGladkov/claude-in-mobile/issues/41"
+         Refs: https://github.com/danilvoe/claude-in-mobile/issues/41"
     );
 }
 

@@ -33,8 +33,8 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/AlexGladkov/claude-in-mobile.git",
+    "url": "git+https://github.com/danilvoe/claude-in-mobile.git",
     "directory": "compat/claude-in-mobile"
   },
-  "homepage": "https://github.com/AlexGladkov/claude-in-mobile#readme"
+  "homepage": "https://github.com/danilvoe/claude-in-mobile#readme"
 }
