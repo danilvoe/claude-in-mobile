@@ -461,7 +461,7 @@ jobs:
         # verification with no further edits here.
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          REPO="AlexGladkov/claude-in-mobile"
+          REPO="danilvoe/claude-in-mobile"
           TAP_REPO="AlexGladkov/homebrew-tap"
           FAILED=0
 

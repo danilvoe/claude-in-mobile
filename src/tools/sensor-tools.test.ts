@@ -1,4 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
+import { join } from "path";
 import { sensorTools } from "./sensor-tools.js";
 import { ValidationError } from "../errors.js";
 import type { ToolContext } from "./context.js";
@@ -601,5 +604,235 @@ describe("sensor_thermal", () => {
   it("throws ValidationError for unknown thermal status string", async () => {
     const ctx = makeMockContext();
     await expect(handler({ status: "blazing" }, ctx)).rejects.toThrow(ValidationError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sensor_location — Aurora
+// ---------------------------------------------------------------------------
+
+describe("sensor_location — Aurora", () => {
+  const handler = findHandler("sensor_location");
+
+  function auroraCtx(adapter: Record<string, unknown>) {
+    const getAdapter = vi.fn(() => adapter);
+    return {
+      ctx: makeMockContext({
+        deviceManager: {
+          getCurrentPlatform: vi.fn(() => "aurora"),
+          getAdapter,
+          shell: vi.fn(() => ""),
+        } as any,
+      }),
+      getAdapter,
+    };
+  }
+
+  it("delegates to the Aurora LocationAdapter", async () => {
+    const setLocation = vi.fn(async () => "GPS location set on Aurora emulator");
+    const { ctx, getAdapter } = auroraCtx({
+      setLocation,
+      loadTrack: vi.fn(),
+      controlTrack: vi.fn(),
+    });
+
+    const result = await handler(
+      { latitude: 59.9311, longitude: 30.3609, altitude: 10, platform: "aurora" },
+      ctx,
+    );
+
+    expect(getAdapter).toHaveBeenCalledWith("aurora", undefined);
+    expect(setLocation).toHaveBeenCalledWith(59.9311, 30.3609, 10, undefined);
+    expect((result as { text: string }).text).toContain("Aurora");
+  });
+
+  it("reports an outdated Aurora plugin instead of throwing", async () => {
+    const { ctx } = auroraCtx({ shell: vi.fn(() => "") });
+
+    const result = await handler(
+      { latitude: 59.9311, longitude: 30.3609, platform: "aurora" },
+      ctx,
+    ) as { text: string; isError?: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("plugin-aurora");
+  });
+
+  it("returns the adapter error message when audb rejects the command", async () => {
+    const { ctx } = auroraCtx({
+      setLocation: vi.fn(async () => {
+        throw new Error("Location and sensor emulation is only supported on emulators");
+      }),
+      loadTrack: vi.fn(),
+      controlTrack: vi.fn(),
+    });
+
+    const result = await handler(
+      { latitude: 1, longitude: 2, platform: "aurora" },
+      ctx,
+    ) as { text: string; isError?: boolean };
+
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("only supported on emulators");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sensor_track — Aurora
+// ---------------------------------------------------------------------------
+
+describe("sensor_track — Aurora", () => {
+  const handler = findHandler("sensor_track");
+
+  function auroraCtx() {
+    const adapter = {
+      setLocation: vi.fn(),
+      loadTrack: vi.fn(async () => "GPS track loaded on Aurora emulator"),
+      controlTrack: vi.fn(async () => "GPS track started on Aurora emulator"),
+    };
+    const getAdapter = vi.fn(() => adapter);
+    return {
+      ctx: makeMockContext({
+        deviceManager: {
+          getCurrentPlatform: vi.fn(() => "aurora"),
+          getAdapter,
+          shell: vi.fn(() => ""),
+        } as any,
+      }),
+      adapter,
+      getAdapter,
+    };
+  }
+
+  it("loads a track from positions without starting playback", async () => {
+    const { ctx, adapter } = auroraCtx();
+
+    const result = await handler(
+      {
+        operation: "load",
+        platform: "aurora",
+        positions: [
+          { latitude: 59.93, longitude: 30.36, altitude: 5, intervalMs: 1000 },
+          { latitude: 59.94, longitude: 30.37 },
+        ],
+        loop: true,
+        speed: 2,
+      },
+      ctx,
+    );
+
+    expect(adapter.loadTrack).toHaveBeenCalledWith(
+      [
+        { latitude: 59.93, longitude: 30.36, altitude: 5, intervalMs: 1000 },
+        { latitude: 59.94, longitude: 30.37, altitude: 0, intervalMs: 2000 },
+      ],
+      { loop: true, speed: 2 },
+      undefined,
+    );
+    expect(adapter.controlTrack).not.toHaveBeenCalled();
+    expect((result as { text: string }).text).toContain("track loaded");
+  });
+
+  it("loads a track from a JSON file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sensor-track-"));
+    const file = join(dir, "route.json");
+    writeFileSync(
+      file,
+      JSON.stringify({
+        positions: [{ latitude: 1.5, longitude: 2.5, altitude: 3, interval: 500 }],
+      }),
+    );
+
+    try {
+      const { ctx, adapter } = auroraCtx();
+      await handler({ operation: "load", platform: "aurora", file }, ctx);
+
+      expect(adapter.loadTrack).toHaveBeenCalledWith(
+        [{ latitude: 1.5, longitude: 2.5, altitude: 3, intervalMs: 500 }],
+        {},
+        undefined,
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("requires exactly one of positions/file for load", async () => {
+    const { ctx } = auroraCtx();
+
+    await expect(handler({ operation: "load", platform: "aurora" }, ctx)).rejects.toThrow(
+      ValidationError,
+    );
+    await expect(
+      handler(
+        {
+          operation: "load",
+          platform: "aurora",
+          positions: [{ latitude: 1, longitude: 2 }],
+          file: "/tmp/route.json",
+        },
+        ctx,
+      ),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("rejects an invalid speed", async () => {
+    const { ctx } = auroraCtx();
+
+    await expect(
+      handler(
+        {
+          operation: "load",
+          platform: "aurora",
+          positions: [{ latitude: 1, longitude: 2 }],
+          speed: 9,
+        },
+        ctx,
+      ),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("controls playback", async () => {
+    const { ctx, adapter } = auroraCtx();
+
+    const result = await handler({ operation: "start", platform: "aurora" }, ctx);
+
+    expect(adapter.controlTrack).toHaveBeenCalledWith("start", {}, undefined);
+    expect((result as { text: string }).text).toContain("started");
+  });
+
+  it("requires an index for goto", async () => {
+    const { ctx, adapter } = auroraCtx();
+
+    await expect(handler({ operation: "goto", platform: "aurora" }, ctx)).rejects.toThrow(
+      ValidationError,
+    );
+    expect(adapter.controlTrack).not.toHaveBeenCalled();
+
+    await handler({ operation: "goto", index: 3, platform: "aurora" }, ctx);
+    expect(adapter.controlTrack).toHaveBeenCalledWith("goto", { index: 3 }, undefined);
+  });
+
+  it("rejects index for non-goto actions", async () => {
+    const { ctx } = auroraCtx();
+
+    await expect(
+      handler({ operation: "pause", index: 1, platform: "aurora" }, ctx),
+    ).rejects.toThrow(ValidationError);
+  });
+
+  it("reports unsupported platforms", async () => {
+    const { ctx } = auroraCtx();
+
+    const result = await handler(
+      {
+        operation: "load",
+        platform: "android",
+        positions: [{ latitude: 1, longitude: 2 }],
+      },
+      ctx,
+    ) as { text: string };
+
+    expect(result.text).toContain("not supported on platform: android");
   });
 });

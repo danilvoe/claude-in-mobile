@@ -13,8 +13,13 @@ import type {
   AppManagementAdapter,
   CorePlatformAdapter,
   FileTransferAdapter,
+  LocationAdapter,
   ShellAdapter,
   SyncScreenshotAdapter,
+  TrackControlAction,
+  TrackControlOptions,
+  TrackOptions,
+  TrackPoint,
 } from "mcp-devices/adapters/platform-adapter";
 import type { Device } from "mcp-devices/device-manager";
 import { auroraClient as defaultAuroraClient, AuroraClient } from "./client.js";
@@ -28,7 +33,8 @@ export class AuroraAdapter
     AppInventoryAdapter,
     ShellAdapter,
     FileTransferAdapter,
-    SyncScreenshotAdapter
+    SyncScreenshotAdapter,
+    LocationAdapter
 {
   readonly platform = "aurora" as const;
   private client: AuroraClient;
@@ -190,6 +196,40 @@ export class AuroraAdapter
     const destination = localPath ?? remotePath.split("/").at(-1) ?? "pulled_file";
     const data = this.client.pullFile(remotePath, destination);
     return `Downloaded ${remotePath} → ${destination} (${data.byteLength} bytes)`;
+  }
+
+  // ============ Location emulation (LocationAdapter) ============
+
+  setLocation(latitude: number, longitude: number, altitude = 0): string {
+    this.client.setLocation(latitude, longitude, altitude);
+    return `GPS location set on Aurora emulator:\n  Latitude:  ${latitude}\n  Longitude: ${longitude}\n  Altitude:  ${altitude}m`;
+  }
+
+  loadTrack(points: TrackPoint[], options: TrackOptions = {}): string {
+    this.client.loadTrack(points, options);
+    const details = [
+      `${points.length} point${points.length === 1 ? "" : "s"}`,
+      options.loop !== undefined ? `loop=${options.loop}` : undefined,
+      options.speed !== undefined ? `speed=${options.speed}x` : undefined,
+      options.defaultInterval !== undefined
+        ? `defaultInterval=${options.defaultInterval}`
+        : undefined,
+    ].filter(Boolean);
+    return `GPS track loaded on Aurora emulator (${details.join(", ")}). Call sensor(action:'track', operation:'start') to play it.`;
+  }
+
+  controlTrack(action: TrackControlAction, options: TrackControlOptions = {}): string {
+    this.client.controlTrack(action, options);
+    if (action === "goto") {
+      return `GPS track moved to point ${options.index} on Aurora emulator.`;
+    }
+    const past = {
+      start: "started",
+      pause: "paused",
+      resume: "resumed",
+      stop: "stopped",
+    } as const;
+    return `GPS track ${past[action]} on Aurora emulator.`;
   }
 
   // ============ System info ============

@@ -4,12 +4,13 @@ import { parseCommonArgs } from "../../utils/parse-common-args.js";
 import { textResult, errorResult } from "../../utils/tool-result.js";
 import { MOCK_LOCATION_GRANT } from "../../adb/commands.js";
 import { dispatchByPlatform } from "../helpers/dispatch.js";
+import { hasLocation } from "../../adapters/platform-adapter.js";
 import { validateNumber, validateLatitude, validateLongitude } from "./helpers.js";
 
 export const sensorLocationTool = defineTool({
   name: "sensor_location",
   description:
-    "Set GPS location on device. Android emulator: uses 'adb emu geo fix'. iOS Simulator: uses 'xcrun simctl location'. Physical Android devices: configures mock location provider via appops. Physical iOS devices: not supported.",
+    "Set GPS location on device. Android emulator: uses 'adb emu geo fix'. iOS Simulator: uses 'xcrun simctl location'. Aurora emulator: uses 'audb location set' (Geoclue emulation, emulators only). Physical Android devices: configures mock location provider via appops. Physical iOS/Aurora devices: not supported.",
   schema: z.object({
     latitude: z.unknown().describe("Latitude in decimal degrees (-90 to 90)"),
     longitude: z.unknown().describe("Longitude in decimal degrees (-180 to 180)"),
@@ -81,8 +82,24 @@ export const sensorLocationTool = defineTool({
           }
         }
       },
+      aurora: async () => {
+        const adapter = ctx.deviceManager.getAdapter("aurora", deviceId);
+        if (!hasLocation(adapter)) {
+          return errorResult(
+            "Aurora location emulation requires a newer @mcp-devices/plugin-aurora " +
+              "with the LocationAdapter capability. Update the plugin and restart the MCP server.",
+          );
+        }
+        try {
+          const message = await adapter.setLocation(lat, lon, alt, deviceId);
+          return textResult(message);
+        } catch (err: unknown) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return errorResult(`Failed to set location on Aurora emulator: ${msg}`);
+        }
+      },
       unsupported: (p) =>
-        textResult(`sensor_location is not supported on platform: ${p}. Supported: android, ios.`),
+        textResult(`sensor_location is not supported on platform: ${p}. Supported: android, ios, aurora.`),
     });
   },
 });

@@ -628,7 +628,8 @@ sandbox(action: 'file_read', package: 'com.example.myapp', path: '/files/config.
 
 | Action | Parameters | Purpose |
 |--------|-----------|---------|
-| `location` | `latitude`, `longitude` | Inject GPS coordinates |
+| `location` | `latitude`, `longitude`, optional `altitude` | Inject GPS coordinates |
+| `track` | `operation` (load/start/pause/resume/stop/goto), `positions` or `file`, optional `index`, `loop`, `speed`, `defaultInterval` | Load and control an emulated GPS route (Aurora emulator only) |
 | `battery` | `level` (0-100), optional `status` | Simulate battery level & status (charging/discharging) |
 | `notifications` | `title`, `text` | Send system notification |
 | `thermal` | `level` (none/light/moderate/severe) | Simulate thermal state |
@@ -651,6 +652,25 @@ sensor(action: 'notifications', title: 'Test', text: 'Notification message')
 // Simulate thermal state
 sensor(action: 'thermal', level: 'moderate')
 ```
+
+**Examples (Aurora emulator):**
+
+```json
+// Set a point
+sensor(action: 'location', platform: 'aurora', latitude: 59.9311, longitude: 30.3609, altitude: 10)
+
+// Load a route from a host JSON file, then play it at 2x with looping
+sensor(action: 'track', platform: 'aurora', operation: 'load', file: './route.json', loop: true, speed: 2)
+sensor(action: 'track', platform: 'aurora', operation: 'start')
+sensor(action: 'track', platform: 'aurora', operation: 'pause')
+sensor(action: 'track', platform: 'aurora', operation: 'goto', index: 5)
+sensor(action: 'track', platform: 'aurora', operation: 'stop')
+```
+
+Track JSON accepts either an array of points or `{ "positions": [...] }`, where each point is
+`{ "latitude": 59.93, "longitude": 30.36, "altitude": 10, "intervalMs": 1000 }`.
+Aurora location emulation requires `audb >= 0.4.2` and only works on emulators (physical
+devices return `CAPABILITY_UNAVAILABLE`).
 
 ---
 

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Aurora emulator GPS emulation: `sensor(action:'location')` and
+  `sensor(action:'track')` (load/start/pause/resume/stop/goto) via
+  `audb location set|track` and the GeoClue emulation D-Bus service.
+  Emulators only; requires `audb >= 0.4.2`.
+- `LocationAdapter` capability and `hasLocation` type guard for plugins.
+
+### Fixed
+- Aurora device discovery now parses the JSON output of `audb --json device list`
+  (0.4.2+) and probes connection state with `audb status`; the legacy table
+  parser is kept as a fallback for older audb releases. Previously a running
+  Aurora emulator was invisible to the MCP server.
+
 ## [4.4.1] — 2026-09-13
 
 ### Security

@@ -4,13 +4,13 @@ import { sensorTools } from "../sensor-tools.js";
 const { meta, aliases } = createMetaTool({
   name: "sensor",
   description:
-    "Sensor & Environment Simulation. location: set GPS coordinates. battery: set battery level/status. notifications: read notification shade. thermal: set thermal status.",
+    "Sensor & Environment Simulation. location: set GPS coordinates. track: load/control an emulated GPS route (Aurora emulator). battery: set battery level/status. notifications: read notification shade. thermal: set thermal status.",
   tools: sensorTools,
   prefix: "sensor_",
   extraSchema: {
     platform: {
       type: "string",
-      enum: ["android", "ios"],
+      enum: ["android", "ios", "aurora"],
       description: "Target platform. If not specified, uses the active target.",
     },
     latitude: {
