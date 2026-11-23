@@ -102,6 +102,57 @@ export interface FileTransferAdapter {
   pullFile(remotePath: string, localPath?: string, deviceId?: string): string | Promise<string>;
 }
 
+// ============ Location emulation capability ============
+
+export interface TrackPoint {
+  latitude: number;
+  longitude: number;
+  altitude?: number;
+  /** Milliseconds between this point and the previous one. */
+  intervalMs?: number;
+}
+
+export interface TrackOptions {
+  /** Loop track playback. */
+  loop?: boolean;
+  /** Playback speed multiplier (1–5 for the Aurora emulator). */
+  speed?: number;
+  /** true — use per-point intervals; false — fixed 2 s per point. */
+  defaultInterval?: boolean;
+}
+
+export type TrackControlAction = "start" | "pause" | "resume" | "stop" | "goto";
+
+export interface TrackControlOptions extends TrackOptions {
+  /** Target point index for the `goto` action. */
+  index?: number;
+}
+
+/**
+ * Emulated location capability (GPS position and track playback).
+ *
+ * Typically implemented by emulator-backed adapters only — physical devices
+ * may reject these operations.
+ */
+export interface LocationAdapter {
+  setLocation(
+    latitude: number,
+    longitude: number,
+    altitude?: number,
+    deviceId?: string,
+  ): string | Promise<string>;
+  loadTrack(
+    points: TrackPoint[],
+    options?: TrackOptions,
+    deviceId?: string,
+  ): string | Promise<string>;
+  controlTrack(
+    action: TrackControlAction,
+    options?: TrackControlOptions,
+    deviceId?: string,
+  ): string | Promise<string>;
+}
+
 // ============ URL opening capability ============
 
 export interface UrlOpeningAdapter {
@@ -258,6 +309,14 @@ export function hasFileTransfer(adapter: CorePlatformAdapter): adapter is CorePl
 
 export function hasUrlOpening(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & UrlOpeningAdapter {
   return "openUrl" in adapter;
+}
+
+export function hasLocation(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & LocationAdapter {
+  return (
+    "setLocation" in adapter &&
+    "loadTrack" in adapter &&
+    "controlTrack" in adapter
+  );
 }
 
 export function hasSyncScreenshot(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & SyncScreenshotAdapter {

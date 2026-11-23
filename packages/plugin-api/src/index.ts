@@ -21,6 +21,7 @@ export type Capability =
   | "terminal"
   | "fileTransfer"
   | "deviceMgmt"
+  | "location"
   // Marker capability for plugins that provide cross-platform meta tools
   // (a UX surface that fans out to platform adapters). Not a platform
   // capability — `findByCapability("screen")` should not return such
@@ -38,6 +39,7 @@ export const ALL_CAPABILITIES: readonly Capability[] = [
   "terminal",
   "fileTransfer",
   "deviceMgmt",
+  "location",
   "meta-tools",
 ] as const;
 

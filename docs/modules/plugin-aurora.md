@@ -61,6 +61,52 @@ This verifies Aurora SDK is installed and lists connected devices/emulators.
 - **Emulator:** Aurora emulator instances created via Aurora Flutter SDK
 - **Physical device:** Aurora OS device with USB debugging enabled
 
+### Location emulation
+
+`sensor(action: 'location')` and `sensor(action: 'track')` drive the Aurora emulator's
+GeoClue emulation service through `audb location ...`. Requirements:
+
+- `audb >= 0.4.2` in `PATH`;
+- a running Aurora **emulator** (physical devices reject the command with
+  `CAPABILITY_UNAVAILABLE`);
+- the app under test must declare the `Location` permission.
+
+The service is exposed on the emulator's **system** D-Bus (`ru.omp.GeoclueEmulationManagement`),
+not the session bus some Aurora documentation mentions. `audb` handles that detail.
+
+#### Autotest recipe
+
+```sh
+# Once per job
+audb emulator start
+until audb --device emulator status --json | grep -q '"connected":true'; do sleep 2; done
+```
+
+```json
+// tests/fixtures/gps/route-line.json
+{
+  "positions": [
+    { "latitude": 59.9311, "longitude": 30.3609, "altitude": 10, "intervalMs": 1000 },
+    { "latitude": 59.9315, "longitude": 30.3615, "altitude": 10, "intervalMs": 1000 }
+  ]
+}
+```
+
+```
+// beforeEach
+sensor(action: 'track', platform: 'aurora', operation: 'load', file: 'tests/fixtures/gps/route-line.json')
+sensor(action: 'track', platform: 'aurora', operation: 'start')
+
+// afterEach — stop playback and reset to a known point
+sensor(action: 'track', platform: 'aurora', operation: 'stop')
+sensor(action: 'location', platform: 'aurora', latitude: 59.9311, longitude: 30.3609)
+```
+
+Run location tests sequentially on a single emulator; `audb` serializes commands per device,
+but concurrent scenarios would still fight over the same simulated position.
+NMEA (`.nmea`) conversion is not part of this plugin: convert `$GPGGA`/`$GPRMC` fixes to the
+JSON shape above in the test repository.
+
 ---
 
 ## Install & Enable
@@ -103,6 +149,7 @@ Aurora uses the same core modules as Android, with ADB-like interface:
 | **ui** | `tree`, `find`, `find_tap`, `tap_text`, `wait`, `assert_visible`, `assert_gone` | Element search, assertions, waits |
 | **app** | `launch`, `stop`, `install`, `list` | App lifecycle |
 | **system** | `shell`, `logs`, `info` | Low-level control, device info |
+| **sensor** | `location`, `track` | GPS position and track emulation (emulator only, `audb >= 0.4.2`) |
 | **screen** | `capture`, `annotate` | Screenshots |
 | **device** | `list`, `set_target`, `enable_module` | Device management |
 | **flow** | `batch`, `run`, `parallel` | Multi-step automation |
@@ -138,6 +185,13 @@ screen(action: 'capture')
 
 // Execute command on device
 system(action: 'shell', command: 'ls /home')
+
+// Emulate GPS position (emulator only)
+sensor(action: 'location', platform: 'aurora', latitude: 59.9311, longitude: 30.3609, altitude: 10)
+
+// Load and play a GPS route (emulator only)
+sensor(action: 'track', platform: 'aurora', operation: 'load', file: './route.json', loop: true, speed: 2)
+sensor(action: 'track', platform: 'aurora', operation: 'start')
 
 // List devices
 device(action: 'list', platform: 'aurora')

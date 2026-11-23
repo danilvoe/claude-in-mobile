@@ -103,3 +103,99 @@ describeUnix("AuroraClient — host-side injection regression (issue #40)", () =
     expect(existsSync(proofFile)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// listDevices — audb JSON output (0.4.2+) with legacy table fallback
+// ---------------------------------------------------------------------------
+
+describeUnix("AuroraClient — listDevices", () => {
+  let workDir: string;
+  let savedPath: string | undefined;
+
+  function installFakeAudb(body: string): void {
+    const fakeAudb = join(workDir, "audb");
+    writeFileSync(fakeAudb, `#!/bin/sh\n${body}\n`);
+    chmodSync(fakeAudb, 0o755);
+  }
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "cim-aurora-list-"));
+    savedPath = process.env.PATH;
+    process.env.PATH = `${workDir}${delimiter}${savedPath ?? ""}`;
+  });
+
+  afterEach(() => {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("parses the --json envelope and probes device state", () => {
+    installFakeAudb(`
+if [ "$1" = "--json" ] && [ "$2" = "device" ]; then
+  printf '%s' '{"ok":true,"schemaVersion":1,"deviceId":null,"data":[{"id":"emulator","name":"Aurora Emulator","host":"127.0.0.1","kind":"emulator","current":true}]}'
+  exit 0
+fi
+if [ "$1" = "--json" ] && [ "$2" = "--device" ] && [ "$4" = "status" ]; then
+  printf '%s' '{"ok":true,"schemaVersion":1,"deviceId":"emulator","data":{"connected":true,"status":{"running":true}}}'
+  exit 0
+fi
+exit 1
+`);
+
+    const devices = new AuroraClient().listDevices();
+
+    expect(devices).toHaveLength(1);
+    expect(devices[0]).toMatchObject({
+      id: "emulator",
+      name: "Aurora Emulator",
+      platform: "aurora",
+      state: "connected",
+      isSimulator: true,
+      host: "127.0.0.1",
+    });
+  });
+
+  it("marks a device disconnected when the status probe fails", () => {
+    installFakeAudb(`
+if [ "$1" = "--json" ] && [ "$2" = "device" ]; then
+  printf '%s' '{"ok":true,"schemaVersion":1,"deviceId":null,"data":[{"id":"phone","name":"Phone","host":"192.168.2.15","kind":"physical"}]}'
+  exit 0
+fi
+exit 1
+`);
+
+    const devices = new AuroraClient().listDevices();
+
+    expect(devices).toHaveLength(1);
+    expect(devices[0]).toMatchObject({
+      id: "phone",
+      state: "disconnected",
+      isSimulator: false,
+    });
+  });
+
+  it("falls back to the legacy table output for older audb", () => {
+    installFakeAudb(`
+if [ "$1" = "--json" ]; then
+  exit 2
+fi
+if [ "$1" = "device" ]; then
+  printf '%s\n' 'Index Name                 Address           Port  Platform   State'
+  printf '%s\n' '0     R570                 192.168.2.13      22    aurora-arm connected(3609s) *'
+  exit 0
+fi
+exit 1
+`);
+
+    const devices = new AuroraClient().listDevices();
+
+    expect(devices).toHaveLength(1);
+    expect(devices[0]).toMatchObject({
+      id: "192.168.2.13",
+      name: "R570",
+      state: "connected",
+      isSimulator: false,
+    });
+  });
+});
