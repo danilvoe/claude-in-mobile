@@ -23,6 +23,7 @@ import type {
 } from "mcp-devices/adapters/platform-adapter";
 import type { Device } from "mcp-devices/device-manager";
 import { auroraClient as defaultAuroraClient, AuroraClient } from "./client.js";
+import { AuroraUiTreeProvider } from "./ui-tree/provider.js";
 import { compressScreenshot } from "mcp-devices/utils/image";
 import type { CompressOptions } from "mcp-devices/utils/image";
 
@@ -38,14 +39,25 @@ export class AuroraAdapter
 {
   readonly platform = "aurora" as const;
   private client: AuroraClient;
+  private readonly uiTree: AuroraUiTreeProvider;
 
   constructor(client?: AuroraClient) {
     this.client = client ?? defaultAuroraClient;
+    this.uiTree = new AuroraUiTreeProvider(this.client);
   }
 
   /** Raw client access -- needed by tools that call getAuroraClient(). */
   getClient(): AuroraClient {
     return this.client;
+  }
+
+  /** UI-tree provider shared with the `aurora_ui_setup` tool. */
+  getUiTreeProvider(): AuroraUiTreeProvider {
+    return this.uiTree;
+  }
+
+  dispose(): void {
+    this.uiTree.close();
   }
 
   // ============ Device management ============
@@ -81,6 +93,7 @@ export class AuroraAdapter
 
   async tap(x: number, y: number): Promise<void> {
     this.client.tap(x, y);
+    this.uiTree.invalidate();
   }
 
   async doubleTap(x: number, y: number, intervalMs: number = 100): Promise<void> {
@@ -88,10 +101,12 @@ export class AuroraAdapter
     this.client.tap(x, y);
     await new Promise(resolve => setTimeout(resolve, intervalMs));
     this.client.tap(x, y);
+    this.uiTree.invalidate();
   }
 
   async longPress(x: number, y: number, durationMs: number = 1000): Promise<void> {
     this.client.longPress(x, y, durationMs);
+    this.uiTree.invalidate();
   }
 
   async swipe(
@@ -102,18 +117,22 @@ export class AuroraAdapter
     durationMs?: number,
   ): Promise<void> {
     this.client.swipe(x1, y1, x2, y2, durationMs);
+    this.uiTree.invalidate();
   }
 
   async swipeDirection(direction: "up" | "down" | "left" | "right"): Promise<void> {
     this.client.swipeDirection(direction);
+    this.uiTree.invalidate();
   }
 
   async inputText(text: string): Promise<void> {
     this.client.inputText(text);
+    this.uiTree.invalidate();
   }
 
   async pressKey(key: string): Promise<void> {
     this.client.pressKey(key);
+    this.uiTree.invalidate();
   }
 
   // ============ Screenshot ============
@@ -140,17 +159,22 @@ export class AuroraAdapter
   // ============ UI ============
 
   async getUiHierarchy(): Promise<string> {
-    return this.client.getUiHierarchy();
+    return await this.uiTree.getHierarchy();
   }
 
   // ============ App management (AppManagementAdapter) ============
 
   launchApp(packageName: string): string {
-    return this.client.launchApp(packageName);
+    const result = this.client.launchApp(packageName);
+    this.uiTree.setActivePackage(packageName);
+    return result;
   }
 
   stopApp(packageName: string): void {
     this.client.stopApp(packageName);
+    if (this.uiTree.getActivePackage() === packageName) {
+      this.uiTree.setActivePackage(undefined);
+    }
   }
 
   installApp(path: string): string {

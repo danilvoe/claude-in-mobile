@@ -109,7 +109,9 @@ export async function resolveElementCoordinates(
   }
 
   const hierarchyPlatform =
-    currentPlatform === "android" || currentPlatform === "harmony"
+    currentPlatform === "android"
+      || currentPlatform === "harmony"
+      || currentPlatform === "aurora"
       ? currentPlatform
       : undefined;
 

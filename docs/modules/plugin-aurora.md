@@ -6,16 +6,16 @@ Automate Aurora OS applications via audb and Aurora Flutter SDK.
 
 ## Overview
 
-Enables Aurora OS app automation: screenshot, touch, text input, app lifecycle, UI traversal, and shell access. Aurora OS is a Linux-based mobile operating system, and mcp-devices provides an ADB-like interface for automation.
+Enables Aurora OS app automation: screenshot, touch, text input, app lifecycle, shell access, and UI-tree inspection when the target app exposes a supported backend. Aurora OS is a Linux-based mobile operating system, and mcp-devices provides an ADB-like interface for automation.
 
 ## When to use it
 
 - **Aurora app testing:** Automate workflows on Aurora OS devices/emulators
 - **Cross-platform testing:** Test same app codebase on Aurora alongside Android
-- **UI automation:** Navigate app screens, fill forms, verify state
+- **UI automation:** Navigate app screens, fill forms, verify state through a Flutter semantics or Qt/QML tree
 - **System access:** Execute commands, read logs, access device info
-- **Visual testing:** Capture screenshots for regression detection
-- **Accessibility audit:** Verify UI accessibility on Aurora OS
+- **Screenshot capture:** Capture screenshots for manual review or comparison in external tooling (the `visual` module is not available on Aurora)
+- **UI inspection:** Inspect labels, roles, flags, and bounds exposed by Flutter debug/profile builds or third-party QML apps
 
 ---
 
@@ -141,29 +141,36 @@ mcp-devices doctor aurora
 
 ## Tools & Actions
 
-Aurora uses the same core modules as Android, with ADB-like interface:
+Aurora uses the same core modules as Android over an ADB-like interface. Element-based
+actions require a UI tree backend (see [UI Tree Backends](#ui-tree-backends)).
 
 | Module | Key Actions | Use |
 |--------|-------------|-----|
-| **input** | `tap` (coords), `double_tap`, `long_press`, `swipe`, `text`, `key` | Touch gestures, text input, keyboard |
-| **ui** | `tree`, `find`, `find_tap`, `tap_text`, `wait`, `assert_visible`, `assert_gone` | Element search, assertions, waits |
+| **input** | `tap` (coords or `text`), `double_tap`, `long_press`, `swipe`, `text`, `key` | Touch gestures, text input, keyboard |
+| **ui** | `tree`, `find`, `find_tap`, `tap_text`, `wait`, `assert_visible`, `assert_gone` | Element search, assertions, waits (requires a UI tree backend) |
 | **app** | `launch`, `stop`, `install`, `list` | App lifecycle |
 | **system** | `shell`, `logs`, `info` | Low-level control, device info |
 | **sensor** | `location`, `track` | GPS position and track emulation (emulator only, `audb >= 0.4.2`) |
-| **screen** | `capture`, `annotate` | Screenshots |
-| **device** | `list`, `set_target`, `enable_module` | Device management |
+| **screen** | `capture`, `annotate` | Screenshots (`annotate` requires a UI tree backend) |
+| **device** | `list`, `set_target`, `enable_module` | Device management; `enable_module` only loads tool schemas |
 | **flow** | `batch`, `run`, `parallel` | Multi-step automation |
 
-Optional: `recorder`, `autopilot`, `performance`, `visual`, `accessibility`.
+Not available on Aurora: `performance`, `visual`, `accessibility`. The Aurora adapter does
+not implement those capabilities, and `device(action: 'enable_module')` only loads the tool
+schemas — it does not add platform support. `ui(action: 'analyze')` works when a UI tree
+backend is available.
 
 ### Example invocations (action syntax)
 
 ```json
-// Tap screen
+// Tap screen coordinates (screenshot pixel space, auto-scaled to device space)
 input(action: 'tap', x: 540, y: 1200)
 
-// Find and tap element
-ui(action: 'find_tap', text: 'Login')
+// Tap an element by text through the UI tree
+input(action: 'tap', text: 'Login')
+
+// Fuzzy tap by description (requires a UI tree backend)
+ui(action: 'find_tap', description: 'login button')
 
 // Type text
 input(action: 'text', text: 'user@example.com')
@@ -174,11 +181,14 @@ input(action: 'swipe', direction: 'up')
 // Launch app
 app(action: 'launch', package: 'com.example.auroraapp')
 
-// Get UI accessibility tree
+// Read the UI tree (requires a supported backend)
 ui(action: 'tree')
 
 // Wait for element
 ui(action: 'wait', text: 'Welcome', timeout: 5000)
+
+// Prepare a Qt/QML app for inspection
+aurora_ui_setup(packageName: 'ru.example.qmlapp')
 
 // Take screenshot
 screen(action: 'capture')
@@ -199,9 +209,117 @@ device(action: 'list', platform: 'aurora')
 
 ---
 
+## UI Tree Backends
+
+Aurora has no Android-style accessibility service. The plugin builds a
+uiautomator-shaped tree from one of two backends and feeds it to the same
+`parseUiHierarchy` path used by Android. When a backend is ready, these work
+unchanged: `ui(tree|find|find_tap|tap_text|wait|assert_*)`,
+`input(action: 'tap', text: ...)`, post-action hints, and
+`screen(action: 'annotate')`.
+
+### Backend selection
+
+| Backend | App type | How it works | Requirements |
+|---------|----------|--------------|--------------|
+| **flutter** | Flutter apps (process maps `libflutter_engine`) | Reads the VM Service URL from the app journal, forwards the port over SSH, enables semantics, and dumps the semantics tree (labels, rects, flags/actions) | Debug or profile build with VM Service; app running |
+| **qtium** | Other (Qt/QML) apps | Talks to the qtium-driver bridge on device port 8888 over an SSH tunnel; expects newline-delimited JSON and tries `app:dumpCurrentPage`, then `app:dumpTree` | Developer mode "Allow UI autotesting" (`qtium-bridge.service`), the qtium `LD_PRELOAD` hook loaded into the app, third-party sandboxed QML app |
+
+The backend is chosen per running process: `libflutter_engine` in
+`/proc/<pid>/maps` selects Flutter, otherwise Qt/QML is assumed. Tree output is
+cached briefly and invalidated by taps, swipes, text input, and key presses.
+
+Flutter needs no app changes: the tree comes from the engine's semantics
+service. Flutter release AOT builds expose no VM Service and are
+**unsupported**. Qtium only covers third-party sandboxed QML apps: system apps
+do not load the hook, and Flutter apps never go through qtium.
+
+### `aurora_ui_setup`
+
+Explicit, agent-controlled preparation of the UI tree. It is idempotent and is
+the only UI-tree operation that changes device state.
+
+| Parameter | Default | Meaning |
+|-----------|---------|---------|
+| `packageName` | auto | App to configure. Resolution order: this parameter, `AURORA_UI_APP` or the last app launched through MCP, then the only running app. |
+| `restartApp` | `false` | Stop and relaunch the app so the qtium hook is loaded (also launches a named app that is not running). **Resets app state** — only set when the caller accepts that. |
+| `enableAutoTest` | `true` | Enable developer-mode UI autotesting (start `qtium-bridge`) when it is not already active. |
+| `deviceId` | active device | Optional audb device ID. |
+
+Behavior:
+
+1. Resolves the target app. If several apps are running and no `packageName` is
+   given, it fails with `AMBIGUOUS_APP`.
+2. **Flutter app:** returns `backend: "flutter"` immediately. No developer-mode
+   changes, no restart — the VM Service is already there in debug/profile builds.
+3. **Qt/QML app:** if the bridge is inactive and `enableAutoTest` is not `false`,
+   runs `gdbus call --system --dest ru.omp.developermode --object-path /
+   --method ru.omp.developermode.SetAutoTestUIEnabled true`, enabling developer
+   mode first if that call fails, then runs `systemctl restart sailjaild` so the
+   new permission set is visible without a reboot. It then waits up to 15 s for
+   the bridge.
+4. If the bridge is still inactive, returns `ok: false`,
+   `code: "BRIDGE_INACTIVE"`.
+5. Checks whether the qtium hook is loaded in the app process. If it is missing
+   and `restartApp` is `false`, returns `ok: false`, `code:
+   "APP_RESTART_REQUIRED"`, `needsAppRestart: true`. With `restartApp: true` it
+   stops and relaunches the app (up to 15 s to come back).
+6. Returns `ok`, `backend`, `bridgeActive`, `appHooked`, `appRestarted`,
+   `needsAppRestart`, `message`, and on failure a `code`.
+
+`aurora_ui_setup` requires root on the device (`audb shell --root`). Failures
+surface as `AURORA_UI_SETUP_FAILED`, `BRIDGE_INACTIVE`, `APP_NOT_RUNNING`, or
+`INVALID_ARGUMENT`.
+
+### Auto-enable behavior
+
+- Autotesting is auto-enabled **inside** `aurora_ui_setup` because
+  `enableAutoTest` defaults to `true`. Pass `enableAutoTest: false` to inspect
+  state without touching developer mode or `sailjaild`.
+- Reading a tree (`ui(action: 'tree')` or any element lookup) never enables
+  autotesting and never restarts the app. If the bridge or hook is missing, the
+  call fails with `UI_TREE_SETUP_REQUIRED` and points at `aurora_ui_setup`.
+- Launching an app with `app(action: 'launch')` makes it the active tree target;
+  `app(action: 'stop')` clears it. Set `AURORA_UI_APP` to disambiguate when
+  several apps are running.
+
+### Coordinate space
+
+- Both backends produce **device-space** bounds, the same space `audb` input
+  uses. Flutter semantics rects are logical pixels and are scaled by the ratio
+  of the `audb` screen geometry to the logical view. Qtium coordinates are
+  usually screen pixels already; if a dump reports a larger logical space, it is
+  scaled down to the screen.
+- Coordinates shown by `ui(action: 'tree')`/`ui(action: 'find')` are device
+  coordinates. Element-based taps derive their target from those bounds
+  directly.
+- Raw `input(action: 'tap', x, y)` values are interpreted in the **last captured
+  screenshot's pixel space** and auto-scaled to device coordinates. With no
+  prior capture the scale is 1×. Do not feed tree coordinates back as raw `x`/`y`
+  after a compressed capture; prefer `text`, `index`, or `resourceId` selectors.
+
+### Limitations
+
+- **Qt/QML dumps are best effort.** Some apps return an empty/invalid tree or
+  hang the dump. The backend falls back from `app:dumpCurrentPage` to
+  `app:dumpTree`, then reports `QTIUM_TIMEOUT`, `QTIUM_DUMP_UNAVAILABLE`, or
+  `QTIUM_EMPTY_TREE`. A spike is still required to make this reliable.
+- **Flutter release builds are unsupported.** Only debug/profile builds expose
+  the VM Service; release AOT builds fail with `VM_SERVICE_NOT_DISCOVERED`.
+- **Setup is runtime-only.** The tree exists while the app is running with the
+  hook or VM Service active; restarting the app or leaving it in the background
+  can invalidate it.
+- **Only the target app is described.** System UI and other processes are not
+  part of the tree.
+- **Two coordinate spaces exist.** Element selectors are safe; raw coordinates
+  depend on the last screenshot. Element-based taps are preferred.
+- `performance`, `visual`, and `accessibility` remain unavailable on Aurora.
+
+---
+
 ## Example Workflows
 
-### Workflow 1: Automate Aurora app login + verification
+### Workflow 1: Automate Aurora Flutter app login + verification
 
 ```
 // 1. List available Aurora devices
@@ -211,24 +329,29 @@ device(action: 'list', platform: 'aurora')
 // 2. Set target to Aurora
 device(action: 'set_target', target: 'aurora')
 
-// 3. Launch app
+// 3. Launch the app (use a debug/profile build for Flutter UI trees)
 app(action: 'launch', package: 'com.example.myauroraapp')
 
-// 4. Wait for login form
+// 4. Confirm the backend. Flutter debug apps need no setup; QML apps may
+//    return APP_RESTART_REQUIRED — see Workflow 5.
+aurora_ui_setup(packageName: 'com.example.myauroraapp')
+→ { ok: true, backend: 'flutter' }
+
+// 5. Wait for login form
 ui(action: 'wait', text: 'Login', timeout: 5000)
 
-// 5. Fill email
-ui(action: 'find_tap', text: 'Email')
+// 6. Fill email
+input(action: 'tap', text: 'Email')
 input(action: 'text', text: 'aurora_user@example.com')
 
-// 6. Fill password
-ui(action: 'find_tap', text: 'Password')
+// 7. Fill password
+input(action: 'tap', text: 'Password')
 input(action: 'text', text: 'AuroraPass123')
 
-// 7. Tap login
-ui(action: 'find_tap', text: 'Sign In')
+// 8. Tap login
+input(action: 'tap', text: 'Sign In')
 
-// 8. Verify success
+// 9. Verify success
 ui(action: 'wait', text: 'Dashboard', timeout: 3000)
 screen(action: 'capture')
 ```
@@ -236,27 +359,24 @@ screen(action: 'capture')
 ### Workflow 2: Cross-platform testing (Aurora + Android)
 
 ```
-// 1. Enable both platforms
+// 1. Test on Android first
 device(action: 'set_target', target: 'android')
-
-// 2. Test on Android first
 app(action: 'launch', package: 'com.example.myapp')
 ui(action: 'wait', text: 'Welcome', timeout: 3000)
 screen(action: 'capture', preset: 'low')
-visual(action: 'baseline', name: 'welcome-android')
 
-// 3. Switch to Aurora platform
+// 2. Switch to Aurora platform
 device(action: 'set_target', target: 'aurora')
 
-// 4. Run same test on Aurora
+// 3. Run the same flow on Aurora
 app(action: 'launch', package: 'com.example.myapp')
+aurora_ui_setup(packageName: 'com.example.myapp')
 ui(action: 'wait', text: 'Welcome', timeout: 3000)
 screen(action: 'capture', preset: 'low')
 
-// 5. Compare visuals
-device(action: 'enable_module', module: 'visual')
-visual(action: 'compare', baseline: 'welcome-android')
-→ { match: true/false, diff: '...' }  // Check platform consistency
+// 4. Compare the two PNGs outside MCP.
+// The visual module is NOT available on Aurora, so there is no
+// visual(action:'baseline'/'compare') step here.
 ```
 
 ### Workflow 3: Shell commands + log inspection
@@ -269,11 +389,12 @@ device(action: 'set_target', target: 'aurora')
 system(action: 'shell', command: 'uname -a')
 → { output: 'Aurora Linux ...' }
 
-// 3. Launch app
+// 3. Launch app and prepare the tree for element-based actions
 app(action: 'launch', package: 'com.example.debugapp')
+aurora_ui_setup(packageName: 'com.example.debugapp')
 
-// 4. Perform operation
-ui(action: 'find_tap', text: 'Process Data')
+// 4. Perform operation through the UI tree
+input(action: 'tap', text: 'Process Data')
 
 // 5. Check logs for errors
 system(action: 'logs', filter: 'Exception')
@@ -287,18 +408,19 @@ system(action: 'shell', command: 'ps aux | grep myapp')
 ### Workflow 4: Multi-screen navigation on Aurora
 
 ```
-// 1. Launch app
+// 1. Launch app and prepare the tree
 app(action: 'launch', package: 'com.example.navigationapp')
+aurora_ui_setup(packageName: 'com.example.navigationapp')
 
 // 2. Navigate through screens
 ui(action: 'wait', text: 'Home', timeout: 3000)
-ui(action: 'find_tap', text: 'Profile')
+input(action: 'tap', text: 'Profile')
 
 ui(action: 'wait', text: 'User Profile', timeout: 3000)
-ui(action: 'find_tap', text: 'Settings')
+input(action: 'tap', text: 'Settings')
 
 ui(action: 'wait', text: 'Settings', timeout: 3000)
-ui(action: 'find_tap', text: 'About')
+input(action: 'tap', text: 'About')
 
 ui(action: 'wait', text: 'About App', timeout: 3000)
 
@@ -310,28 +432,27 @@ input(action: 'key', key: 'BACK')
 ui(action: 'wait', text: 'Settings', timeout: 2000)
 ```
 
-### Workflow 5: Performance monitoring on Aurora
+### Workflow 5: Prepare a Qt/QML app for UI inspection (best effort)
 
 ```
-// 1. Enable performance module
-device(action: 'enable_module', module: 'performance')
+// 1. Launch a third-party sandboxed QML app
+app(action: 'launch', package: 'ru.example.qmlapp')
 
-// 2. Launch app and capture baseline
-app(action: 'launch', package: 'com.example.myapp')
-performance(action: 'snapshot', metric: 'memory')
-→ { rss: 180.5, heap: 120.3 }  // MB
+// 2. Check whether autotesting and the hook are ready
+aurora_ui_setup(packageName: 'ru.example.qmlapp')
+→ { ok: false, code: 'APP_RESTART_REQUIRED', needsAppRestart: true }
 
-// 3. Perform heavy operation
-ui(action: 'find_tap', text: 'Load Large Data')
-ui(action: 'wait', text: 'Complete', timeout: 10000)
+// 3. Accept the state reset and restart to load the qtium hook
+aurora_ui_setup(packageName: 'ru.example.qmlapp', restartApp: true)
+→ { ok: true, backend: 'qtium', bridgeActive: true, appHooked: true, appRestarted: true }
 
-// 4. Capture after
-performance(action: 'snapshot', metric: 'memory')
-→ { rss: 320.8, heap: 250.5 }  // increased
+// 4. Inspect and interact
+ui(action: 'tree', format: 'semantic')
+input(action: 'tap', text: 'Continue')
 
-// 5. Check system info
-system(action: 'info')
-→ { device: 'Aurora Emulator', os: 'Aurora Linux', ... }
+// 5. Fall back to screenshots + coordinates if the dump fails or hangs
+screen(action: 'capture')
+input(action: 'tap', x: 320, y: 780)
 ```
 
 ---
@@ -342,7 +463,12 @@ system(action: 'info')
 |---------|-------|----------|
 | "Aurora SDK not found" | `audb` not installed or not in PATH | Install Aurora Flutter SDK; add to PATH |
 | "No devices attached" | No emulator running or device not connected | Start Aurora emulator; check USB connection on physical device |
-| "Element not found" | Text doesn't match or element doesn't exist | Use `ui(action: 'tree')` to inspect accessibility tree |
+| "Element not found" | Tree backend unavailable or text doesn't match | Confirm `ui(action: 'tree')` returns elements; call `aurora_ui_setup` for QML apps |
+| "UI_TREE_SETUP_REQUIRED" | qtium bridge inactive or hook not loaded | Call `aurora_ui_setup`; repeat with `restartApp: true` if it returns `APP_RESTART_REQUIRED` |
+| "VM_SERVICE_NOT_DISCOVERED" | Flutter release build, app not running, or log line rotated away | Use a debug/profile build; keep the app running and relaunch to refresh the journal |
+| "APP_NOT_RUNNING" / "AMBIGUOUS_APP" | Target app cannot be resolved | Launch the app, pass `packageName`, or set `AURORA_UI_APP` |
+| "QTIUM_TIMEOUT" / "QTIUM_DUMP_UNAVAILABLE" | The app's QML dump hangs or is unsupported | Retry once; otherwise fall back to `screen(action: 'capture')` and coordinate taps |
+| "AURORA_UI_SETUP_FAILED" / "BRIDGE_INACTIVE" | No root access or developer mode cannot be enabled | Verify `audb shell --root` works and developer mode is available on the device |
 | "App not found" | Package name incorrect or app not installed | Verify package name; install app first with `app(action: 'install', ...)` |
 | "Shell command fails" | Command not available or permission denied | Check command syntax; some commands may require elevated permissions |
 

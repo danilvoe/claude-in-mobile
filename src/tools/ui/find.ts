@@ -68,7 +68,7 @@ export const uiFind = defineTool({
 export const uiFindTap = defineTool({
   name: "ui_find_tap",
   description:
-    "Fuzzy tap by natural language element description (Android/HarmonyOS). When the matched element is a non-clickable label (common in grid/list items where the parent owns the gesture), walks up to the smallest containing clickable ancestor by default — set walkToClickable=false to tap the matched element directly.",
+    "Fuzzy tap by natural language element description (Android/HarmonyOS/Aurora). When the matched element is a non-clickable label (common in grid/list items where the parent owns the gesture), walks up to the smallest containing clickable ancestor by default — set walkToClickable=false to tap the matched element directly.",
   schema: z.object({
     description: z
       .string()
@@ -89,8 +89,8 @@ export const uiFindTap = defineTool({
   handler: async (args, ctx) => {
     const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
 
-    if (currentPlatform !== "android" && currentPlatform !== "harmony") {
-      return textResult("ui(action:'find_tap') is available for Android and HarmonyOS. Use tap with coordinates for iOS/Desktop.");
+    if (currentPlatform !== "android" && currentPlatform !== "harmony" && currentPlatform !== "aurora") {
+      return textResult("ui(action:'find_tap') is available for Android, HarmonyOS and Aurora. Use tap with coordinates for iOS/Desktop.");
     }
 
     const description = args.description;
@@ -127,7 +127,7 @@ export const uiFindTap = defineTool({
 
 export const uiTapText = defineTool({
   name: "ui_tap_text",
-  description: "Tap element by text via Accessibility API (Desktop/macOS only)",
+  description: "Tap element by text via Accessibility API (Desktop/macOS) or UI tree (Aurora)",
   schema: z.object({
     text: z.string().describe("Text to search for (partial match, case-insensitive)"),
     pid: z
@@ -141,7 +141,24 @@ export const uiTapText = defineTool({
     deviceId: deviceIdField,
   }),
   handler: async (args, ctx) => {
-    const { platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+    const { deviceId, platform: currentPlatform } = parseCommonArgs(args as Record<string, unknown>, ctx);
+
+    if (currentPlatform === "aurora") {
+      const text = args.text;
+      const exactMatch = args.exactMatch;
+      const { elements } = await getUiElements(ctx, "aurora", deviceId);
+      const needle = text.toLowerCase();
+      const matches = elements.filter((element) => {
+        const value = (element.text || element.contentDesc).toLowerCase();
+        return exactMatch ? value === needle : value.includes(needle);
+      });
+      const target = matches.find((element) => element.clickable) ?? matches[0];
+      if (!target) {
+        return textResult(`No element found with text "${text}". Use ui(action:'tree') to inspect available elements.`);
+      }
+      await ctx.deviceManager.tap(target.centerX, target.centerY, "aurora", undefined, deviceId);
+      return textResult(`OK: Tapped "${text}" at (${target.centerX}, ${target.centerY}).`);
+    }
 
     if (currentPlatform !== "desktop") {
       return textResult(

@@ -132,6 +132,37 @@ describe("parseUiHierarchy", () => {
       expect(el.index).toBe(i);
     });
   });
+
+  it("decodes XML entities in text, resource-id and content-desc", () => {
+    const xml =
+      `<hierarchy>` +
+      `<node index="0" text="A &amp; B &quot;q&quot;" ` +
+      `resource-id="com.test:id/a&amp;b" ` +
+      `content-desc="&lt;desc&gt; &apos;x&apos;" ` +
+      `class="android.widget.Button" package="com.test" ` +
+      `clickable="true" enabled="true" bounds="[0,0][100,50]" />` +
+      `</hierarchy>`;
+
+    const elements = parseUiHierarchy(xml);
+
+    expect(elements).toHaveLength(1);
+    expect(elements[0].text).toBe('A & B "q"');
+    expect(elements[0].resourceId).toBe("com.test:id/a&b");
+    expect(elements[0].contentDesc).toBe("<desc> 'x'");
+  });
+
+  it("does not double-decode escaped entity text", () => {
+    const xml =
+      `<hierarchy>` +
+      `<node index="0" text="Use &amp;lt; to escape" ` +
+      `class="android.widget.TextView" package="com.test" ` +
+      `bounds="[0,0][100,50]" />` +
+      `</hierarchy>`;
+
+    const elements = parseUiHierarchy(xml);
+
+    expect(elements[0].text).toBe("Use &lt; to escape");
+  });
 });
 
 // ──────────────────────────────────────────────

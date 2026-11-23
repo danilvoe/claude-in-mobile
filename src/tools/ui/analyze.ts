@@ -44,7 +44,7 @@ export const uiAnalyze = defineTool({
       }
     }
 
-    if (!currentPlatform || !["android", "ios", "desktop", "harmony"].includes(currentPlatform)) {
+    if (!currentPlatform || !["android", "ios", "desktop", "harmony", "aurora"].includes(currentPlatform)) {
       if (currentPlatform) {
         return textResult(`ui(action:'analyze') is not supported for platform: ${currentPlatform}`);
       }

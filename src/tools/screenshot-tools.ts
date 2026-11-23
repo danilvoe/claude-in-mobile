@@ -244,7 +244,7 @@ export const screenshotTools: ToolDefinition[] = [
 
   defineTool({
     name: "screen_annotate",
-    description: "Screenshot with numbered bounding boxes on UI elements (Android/iOS)",
+    description: "Screenshot with numbered bounding boxes on UI elements (Android/iOS/Aurora)",
     schema: z.object({
       platform: platformEnum,
       maxWidth: z
@@ -277,7 +277,7 @@ export const screenshotTools: ToolDefinition[] = [
       const { deviceId } = parseCommonArgs(args as Record<string, unknown>, ctx);
       const platform = args.platform as Platform | undefined;
       const currentPlat = platform ?? ctx.deviceManager.getCurrentPlatform();
-      if (currentPlat === "desktop" || currentPlat === "aurora") {
+      if (currentPlat === "desktop") {
         return textResult(
           `screen(action:'annotate') is not supported for ${currentPlat} platform. Use screen(action:'capture') + ui(action:'tree') instead.`,
         );

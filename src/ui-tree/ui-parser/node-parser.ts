@@ -79,7 +79,18 @@ function extractAttr(nodeStr: string, attrName: string): string {
   const regex = ATTR_REGEXES[attrName];
   if (!regex) return "";
   const match = nodeStr.match(regex);
-  return match?.[1] ?? "";
+  return decodeXmlEntities(match?.[1] ?? "");
+}
+
+/** uiautomator escapes XML entities in attributes; decode them for matching. */
+function decodeXmlEntities(value: string): string {
+  if (!value.includes("&")) return value;
+  return value
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&amp;/g, "&");
 }
 
 /**

@@ -13,8 +13,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `audb location set|track` and the GeoClue emulation D-Bus service.
   Emulators only; requires `audb >= 0.4.2`.
 - `LocationAdapter` capability and `hasLocation` type guard for plugins.
+- Aurora UI tree with two backends for element-based automation:
+  - Flutter debug/profile apps are read through the VM Service semantics tree
+    (labels, rects, flags/actions); logical rects are scaled into device
+    coordinates. Release AOT builds have no VM Service and are unsupported.
+  - Qt/QML apps are read through the qtium-driver bridge on port 8888
+    (developer-mode "Allow UI autotesting", third-party sandboxed apps only).
+    Best effort: dumps on some apps currently fail or hang.
+  `ui(tree|find|find_tap|tap_text|wait|assert_*)`, `input_tap(text:...)`,
+  post-action hints, and `screen_annotate` now use the tree on Aurora when a
+  backend is available.
+- `aurora_ui_setup` tool: enables developer-mode UI autotesting via
+  `SetAutoTestUIEnabled true`, restarts `sailjaild`, and restarts the target app
+  only when `restartApp: true` (restarting resets app state). Requires root and
+  is idempotent.
 
 ### Fixed
+- `parseUiHierarchy` now decodes XML entities (`&quot;`, `&apos;`, `&lt;`,
+  `&gt;`, `&amp;`) in attributes, so labels containing quotes or angle brackets
+  match correctly.
 - Aurora device discovery now parses the JSON output of `audb --json device list`
   (0.4.2+) and probes connection state with `audb status`; the legacy table
   parser is kept as a fallback for older audb releases. Previously a running

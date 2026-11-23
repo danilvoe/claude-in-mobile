@@ -18,6 +18,26 @@ export interface Device {
   host?: string;
 }
 
+export interface RunningApp {
+  package: string;
+  pid: number;
+}
+
+export interface AudbDeviceRecord {
+  id: string;
+  host: string;
+  sshPort: number;
+  sshUser: string;
+  sshKey: string;
+  kind?: string;
+  emulatorSdkRoot?: string;
+}
+
+export interface ScreenshotGeometry {
+  width: number;
+  height: number;
+}
+
 export interface LogOptions {
   lines?: number;
   priority?: string;
@@ -260,6 +280,135 @@ export class AuroraClient {
   selectDevice(deviceId: string): void {
     validateDeviceId(deviceId);
     this.runAudbSync(["select", deviceId]);
+  }
+
+  // ============ UI-tree support ============
+
+  /** Run a command as root on the device (audb `shell --root`). */
+  shellRoot(command: string): string {
+    return this.runAudbSync(["shell", "--root", command]);
+  }
+
+  /** List running applications with PIDs (`audb --json app list-running`). */
+  listRunningApps(): RunningApp[] {
+    const data = parseAudbData(this.runAudbSync(["--json", "app", "list-running"]));
+    if (!Array.isArray(data)) return [];
+    const apps: RunningApp[] = [];
+    for (const entry of data) {
+      if (entry === null || typeof entry !== "object") continue;
+      const raw = entry as { package?: unknown; pid?: unknown };
+      if (typeof raw.package !== "string") continue;
+      const pid = typeof raw.pid === "number" ? raw.pid : Number(raw.pid);
+      if (!Number.isInteger(pid) || pid <= 0) continue;
+      apps.push({ package: raw.package, pid });
+    }
+    return apps;
+  }
+
+  /** PID of a running application, if it is in the RuntimeManager list. */
+  getAppPid(packageName: string): number | undefined {
+    return this.listRunningApps().find((app) => app.package === packageName)?.pid;
+  }
+
+  /**
+   * Resolve the audb device record (host, SSH key/port/user). The record is
+   * needed to open a local tunnel to device-local services (VM Service, qtium).
+   */
+  getDeviceRecord(deviceId?: string): AudbDeviceRecord {
+    const data = parseAudbData(this.runAudbSync(["--json", "device", "list"]));
+    const entries = Array.isArray(data) ? data : [];
+    const records = entries.filter((entry): entry is Record<string, unknown> =>
+      entry !== null && typeof entry === "object"
+    );
+    const record = deviceId
+      ? records.find((entry) => entry.id === deviceId)
+      : records.find((entry) => entry.current === true) ?? (records.length === 1 ? records[0] : undefined);
+
+    if (!record) {
+      throw new MobileError(
+        deviceId
+          ? `Aurora device "${deviceId}" is not configured.`
+          : "No active Aurora device is configured.",
+        "DEVICE_NOT_FOUND",
+      );
+    }
+
+    const id = typeof record.id === "string" ? record.id : String(record.host ?? "unknown");
+    const host = typeof record.host === "string" ? record.host : id;
+    const sshPortRaw = record.sshPort;
+    const sshPort = typeof sshPortRaw === "number" ? sshPortRaw : Number(sshPortRaw);
+    const sshUser = typeof record.sshUser === "string" ? record.sshUser : "defaultuser";
+    const emulator = record.emulator !== null && typeof record.emulator === "object"
+      ? record.emulator as Record<string, unknown>
+      : undefined;
+    const emulatorSdkRoot = typeof emulator?.sdkRoot === "string" ? emulator.sdkRoot : undefined;
+    const explicitKey = typeof record.sshKey === "string" ? record.sshKey : undefined;
+    const sshKey = explicitKey
+      ?? (emulatorSdkRoot ? join(emulatorSdkRoot, "vmshare", "ssh", "private_keys", "sdk") : "");
+
+    if (!sshKey) {
+      throw new MobileError(
+        `No SSH key is configured for Aurora device "${id}".`,
+        "SSH_KEY_NOT_FOUND",
+      );
+    }
+
+    return {
+      id,
+      host,
+      sshPort: Number.isInteger(sshPort) && sshPort > 0 ? sshPort : 22,
+      sshUser,
+      sshKey,
+      kind: typeof record.kind === "string" ? record.kind : undefined,
+      emulatorSdkRoot,
+    };
+  }
+
+  /** Screen geometry in the coordinate space used by audb tap/swipe. */
+  getScreenshotGeometry(): ScreenshotGeometry {
+    try {
+      const data = parseAudbData(this.runAudbSync(["--json", "capabilities"]));
+      if (data !== null && typeof data === "object") {
+        const capabilities = (data as { capabilities?: unknown }).capabilities;
+        if (capabilities !== null && typeof capabilities === "object") {
+          const screenshot = (capabilities as { screenshot?: unknown }).screenshot;
+          if (screenshot !== null && typeof screenshot === "object") {
+            const geometry = (screenshot as { geometry?: unknown }).geometry;
+            if (geometry !== null && typeof geometry === "object") {
+              const raw = geometry as { width?: unknown; height?: unknown };
+              const width = Number(raw.width);
+              const height = Number(raw.height);
+              if (width > 0 && height > 0) return { width, height };
+            }
+          }
+        }
+      }
+    } catch {
+      /* fall through to `audb info` */
+    }
+
+    try {
+      const data = parseAudbData(this.runAudbSync(["--json", "info"]));
+      if (data !== null && typeof data === "object") {
+        const device = (data as { device?: unknown }).device;
+        if (device !== null && typeof device === "object") {
+          const screen = (device as { screen?: unknown }).screen;
+          if (typeof screen === "string") {
+            const match = screen.match(/^(\d+)x(\d+)$/);
+            if (match) {
+              return { width: Number(match[1]), height: Number(match[2]) };
+            }
+          }
+        }
+      }
+    } catch {
+      /* handled below */
+    }
+
+    throw new MobileError(
+      "Could not determine the Aurora screen geometry.",
+      "SCREEN_GEOMETRY_UNAVAILABLE",
+    );
   }
 
   // ============ Location emulation (emulators only) ============

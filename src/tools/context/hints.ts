@@ -109,6 +109,9 @@ async function fetchUiElements(
   } else if (currentPlatform === "desktop") {
     const text = await deviceManager.getUiHierarchyAsync("desktop");
     return desktopHierarchyToUiElements(text);
+  } else if (currentPlatform === "aurora") {
+    const xml = await deviceManager.getUiHierarchyAsync("aurora");
+    return parseUiHierarchy(xml);
   }
   return [];
 }
@@ -142,6 +145,11 @@ export function createGetElementsForPlatform(deviceManager: DeviceManager, optio
       const text = await deviceManager.getUiHierarchyAsync("desktop");
       const elements = desktopHierarchyToUiElements(text);
       setCachedElements("desktop", elements);
+      return elements;
+    } else if (plat === "aurora") {
+      const xml = await deviceManager.getUiHierarchyAsync("aurora", undefined, turbo);
+      const elements = parseUiHierarchy(xml);
+      setCachedElements("aurora", elements);
       return elements;
     }
     return [];

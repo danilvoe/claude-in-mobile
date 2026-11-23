@@ -4,7 +4,7 @@ import { uiTools } from "../ui-tools.js";
 const { meta, aliases } = createMetaTool({
   name: "ui",
   description:
-    "UI inspection and interaction. tree: accessibility tree. find: search elements. find_tap: fuzzy tap (Android/HarmonyOS). tap_text: tap by text (Desktop). analyze: screen analysis. wait/assert_visible/assert_gone: element checks.",
+    "UI inspection and interaction. tree: accessibility/semantics tree (Android/iOS/HarmonyOS/Desktop/Aurora). find: search elements (Android/HarmonyOS/Aurora). find_tap: fuzzy tap (Android/HarmonyOS/Aurora). tap_text: tap by text (Desktop/Aurora). analyze: screen analysis. wait/assert_visible/assert_gone: element checks.",
   tools: uiTools,
   prefix: "ui_",
   extraSchema: {

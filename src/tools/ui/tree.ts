@@ -123,6 +123,7 @@ export const uiTree = defineTool({
     }
 
     const parsedElements = parseUiHierarchy(xml);
-    return textResult(formatAndCacheTree(ctx, "android", parsedElements, opts));
+    const cachePlatform = currentPlatform ?? platform ?? "android";
+    return textResult(formatAndCacheTree(ctx, cachePlatform, parsedElements, opts));
   },
 });

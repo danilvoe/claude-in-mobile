@@ -32,10 +32,12 @@
   "dependencies": {
     "@mcp-devices/plugin-api": "1.0.0",
     "mcp-devices": "*",
+    "ws": "^8.23.0",
     "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.0",
+    "@types/ws": "^8.18.2",
     "typescript": "^5.7.0"
   },
   "repository": {

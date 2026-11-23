@@ -270,6 +270,38 @@ describe("resolveElementCoordinates — HarmonyOS with text", () => {
   });
 });
 
+describe("resolveElementCoordinates — Aurora with text", () => {
+  it("parses uiautomator-shaped XML and returns the element center", async () => {
+    const xml = makeAndroidXml("Record", "[20,338][126,462]");
+    const getUiHierarchyAsync = vi.fn().mockResolvedValue(xml);
+    const setCachedElements = vi.fn();
+    const ctx = makeCtx({ getUiHierarchyAsync, setCachedElements });
+
+    const result = await resolveElementCoordinates({ text: "Record" }, ctx, "aurora");
+
+    expect(getUiHierarchyAsync).toHaveBeenCalledWith("aurora", undefined);
+    expect(result).not.toBeNull();
+    // bounds [20,338][126,462] => centerX = 73, centerY = 400
+    expect(result).toMatchObject({
+      x: 73,
+      y: 400,
+      description: "Record",
+      fromRawArgs: false,
+    });
+    expect(setCachedElements).toHaveBeenCalledWith("aurora", expect.any(Array));
+  });
+
+  it("throws ElementNotFoundError when text is missing from the Aurora hierarchy", async () => {
+    const xml = makeAndroidXml("Stop", "[0,0][100,50]");
+    const getUiHierarchyAsync = vi.fn().mockResolvedValue(xml);
+    const ctx = makeCtx({ getUiHierarchyAsync });
+
+    await expect(
+      resolveElementCoordinates({ text: "Record" }, ctx, "aurora"),
+    ).rejects.toThrow(ElementNotFoundError);
+  });
+});
+
 // ─────────────────────────────────────────────────────────────
 // Raw x/y coordinates
 // ─────────────────────────────────────────────────────────────
