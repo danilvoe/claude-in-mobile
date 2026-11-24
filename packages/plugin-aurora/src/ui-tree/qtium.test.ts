@@ -2,7 +2,8 @@ import zlib from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 
-import { buildCommandPayload, flattenQtiumTree, parseCompressedPayload } from "./qtium.js";
+import type { AuroraClient } from "../client.js";
+import { buildCommandPayload, flattenQtiumTree, parseCompressedPayload, QtiumUiTreeBackend } from "./qtium.js";
 
 const SCREEN = { width: 360, height: 800 };
 const PACKAGE = "ru.example.qmlapp";
@@ -165,6 +166,8 @@ describe("flattenQtiumTree (app:dumpCurrentPage shape)", () => {
   });
 
   it("keeps QML coordinates when the dump already uses screen pixels", () => {
+    expect(byId("Text@30,500")?.bounds).toEqual({ x1: 30, y1: 500, x2: 130, y2: 524 });
+    expect(byId("item0")?.bounds).toEqual({ x1: 0, y1: 400, x2: 360, y2: 464 });
     expect(nodes.every((node) => node.bounds.x2 <= SCREEN.width)).toBe(true);
     expect(nodes.every((node) => node.bounds.y2 <= SCREEN.height)).toBe(true);
   });
@@ -367,5 +370,105 @@ describe("buildCommandPayload", () => {
     const lines = buildCommandPayload(PACKAGE, "app:js", ["1 + 1"]).trimEnd().split("\n");
 
     expect(JSON.parse(lines[1]).params).toEqual(["app:js", ["1 + 1"]]);
+  });
+});
+
+describe("QtiumUiTreeBackend service state", () => {
+  const backendWith = (state: string) => new QtiumUiTreeBackend({
+    shellRoot: () => state,
+  } as unknown as AuroraClient);
+
+  it("does not treat 'inactive' as active", () => {
+    expect(backendWith("inactive").isBridgeActive()).toBe(false);
+    expect(backendWith("activating").isBridgeActive()).toBe(true);
+    expect(backendWith("active").isBridgeActive()).toBe(true);
+  });
+});
+
+describe("flattenQtiumTree value coercion", () => {
+  it("treats string 'false' visibility and enabled as false", () => {
+    const tree = {
+      classname: "ApplicationWindow",
+      abs_x: 0,
+      abs_y: 0,
+      width: 360,
+      height: 800,
+      objectName: "window",
+      children: [
+        {
+          classname: "Text",
+          abs_x: 0,
+          abs_y: 0,
+          width: 100,
+          height: 20,
+          mainTextProperty: "hidden",
+          objectName: "hidden",
+          visible: "false",
+        },
+        {
+          classname: "TextField",
+          abs_x: 0,
+          abs_y: 40,
+          width: 100,
+          height: 20,
+          objectName: "field",
+          enabled: "false",
+        },
+      ],
+    };
+
+    const nodes = flattenQtiumTree(tree, PACKAGE, SCREEN);
+
+    expect(nodes.map((node) => node.id)).toEqual(["window", "field"]);
+    expect(nodes[1].enabled).toBe(false);
+  });
+});
+
+describe("flattenQtiumTree scale direction", () => {
+  it("scales up when the screen is larger than the logical root", () => {
+    const tree = {
+      classname: "ApplicationWindow",
+      abs_x: 0,
+      abs_y: 0,
+      width: 360,
+      height: 800,
+      objectName: "window",
+      children: [
+        { classname: "Button", abs_x: 10, abs_y: 20, width: 100, height: 40, objectName: "btn" },
+      ],
+    };
+
+    const nodes = flattenQtiumTree(tree, PACKAGE, { width: 1080, height: 2400 });
+
+    expect(nodes.find((node) => node.id === "btn")?.bounds).toEqual({
+      x1: 30,
+      y1: 60,
+      x2: 330,
+      y2: 180,
+    });
+  });
+
+  it("uses the width ratio when a dialog root does not span the screen height", () => {
+    const tree = {
+      classname: "Page",
+      abs_x: 0,
+      abs_y: 400,
+      width: 720,
+      height: 800,
+      objectName: "dialog",
+      children: [
+        { classname: "Button", abs_x: 100, abs_y: 500, width: 200, height: 80, objectName: "ok" },
+      ],
+    };
+
+    // ratioX = 360/720 = 0.5, ratioY = 800/1200 = 0.667 -> non-uniform.
+    const nodes = flattenQtiumTree(tree, PACKAGE, { width: 360, height: 800 });
+
+    expect(nodes.find((node) => node.id === "ok")?.bounds).toEqual({
+      x1: 50,
+      y1: 250,
+      x2: 150,
+      y2: 290,
+    });
   });
 });

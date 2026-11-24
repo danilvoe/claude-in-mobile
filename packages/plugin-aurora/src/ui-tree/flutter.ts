@@ -12,7 +12,7 @@
 
 import type { AuroraClient } from "../client.js";
 import { redactSecrets } from "../flutter/redact.js";
-import { findProcessWithLibrary } from "./process-scan.js";
+import { findProcessWithLibrary, probeProcessLibrary } from "./process-scan.js";
 import { parseSemanticsDump, semanticsToUiNodes } from "./semantics.js";
 import { SshTunnel } from "./tunnel.js";
 import {
@@ -31,6 +31,16 @@ interface VmServiceLocation {
   port: number;
   token: string;
   pid: number;
+}
+
+/** Result of rootless-capable Flutter backend detection. */
+export interface FlutterAppEvidence {
+  /** Inner process pid the UI tree must be read from. */
+  innerPid: number;
+  /** Which evidence classified the app. */
+  source: "maps" | "vm-service";
+  /** Set when the journal VM Service line was readable. */
+  vmService?: { pid: number; port: number };
 }
 
 interface CachedSession {
@@ -56,22 +66,7 @@ export class FlutterUiTreeBackend {
   /** True when the running process has the Flutter engine mapped. */
   isFlutterProcess(pid: number): boolean {
     if (!Number.isInteger(pid) || pid <= 0) return false;
-    try {
-      const output = this.client.shell(
-        `grep -q libflutter_engine /proc/${pid}/maps && echo flutter || echo other`,
-      );
-      if (output.includes("flutter")) return true;
-    } catch {
-      /* fall through to the root probe */
-    }
-    try {
-      const output = this.client.shellRoot(
-        `grep -q libflutter_engine /proc/${pid}/maps && echo flutter || echo other`,
-      );
-      return output.includes("flutter");
-    } catch {
-      return false;
-    }
+    return probeProcessLibrary(this.client, pid, "libflutter_engine") === "match";
   }
 
   /**
@@ -82,8 +77,36 @@ export class FlutterUiTreeBackend {
     return findProcessWithLibrary(this.client, pid, "libflutter_engine");
   }
 
+  /**
+   * Classify a running app as Flutter without requiring root.
+   *
+   * `/proc/<pid>/maps` is unreadable for a sandboxed app on a physical device
+   * where the SSH user is not root (`audb shell --root` fails), so the journal
+   * VM Service line — which only a Flutter debug/profile build emits — is
+   * first-class evidence. The line also names the real inner pid, which is what
+   * the tunnel and semantics dump need.
+   */
+  detectApp(packageName: string, rootPid: number): FlutterAppEvidence | undefined {
+    const mapsPid = this.resolveAppPid(rootPid);
+    if (mapsPid !== undefined) {
+      return { innerPid: mapsPid, source: "maps" };
+    }
+    const vmService = this.findVmService(packageName);
+    if (!vmService) return undefined;
+    return { innerPid: vmService.pid, source: "vm-service", vmService };
+  }
+
   async getSnapshot(packageName: string, pid: number): Promise<UiTreeSnapshot> {
-    const resolvedPid = this.isFlutterProcess(pid) ? pid : (this.resolveAppPid(pid) ?? pid);
+    // The journal line names the real (inner) pid and needs no privileges, so
+    // it is the primary source. `/proc` probing is only a tie-breaker for apps
+    // whose VM Service line already rotated out of the journal.
+    const location = this.discoverVmService(packageName, pid)
+      ?? this.discoverVmService(packageName);
+    const resolvedPid = location !== undefined
+      ? location.pid
+      : this.isFlutterProcess(pid)
+        ? pid
+        : (this.resolveAppPid(pid) ?? pid);
 
     // A live VM Service session outlives the journal line that announced it.
     if (this.session && this.session.pid === resolvedPid && this.session.client.connected) {
@@ -95,13 +118,14 @@ export class FlutterUiTreeBackend {
     }
 
     try {
-      const first = await this.tryGetSnapshot(packageName, resolvedPid);
+      const first = await this.tryGetSnapshot(packageName, resolvedPid, location);
       if (first) return first;
     } catch {
       /* retry once after dropping a stale session */
     }
 
-    // The app may have been restarted between discovery and connect.
+    // The app may have been restarted between discovery and connect, so the
+    // second attempt re-reads the journal instead of reusing the location.
     this.disposeSession();
     const second = await this.tryGetSnapshot(packageName, resolvedPid);
     if (second) return second;
@@ -134,7 +158,7 @@ export class FlutterUiTreeBackend {
     try {
       const output = this.client.shellRoot(`ss -tlnp 2>/dev/null | grep 'pid=${pid},'`);
       for (const line of output.split(/\r?\n/)) {
-        const match = line.match(/127\.0\.0\.1:(\d+)/);
+        const match = line.match(/(?:127\.0\.0\.1|\[::1\]):(\d+)/);
         if (match) return Number(match[1]);
       }
     } catch {
@@ -151,10 +175,15 @@ export class FlutterUiTreeBackend {
     this.disposeSession();
   }
 
-  private async tryGetSnapshot(packageName: string, pid: number): Promise<UiTreeSnapshot | undefined> {
+  private async tryGetSnapshot(
+    packageName: string,
+    pid: number,
+    known?: VmServiceLocation,
+  ): Promise<UiTreeSnapshot | undefined> {
     // Prefer the wrapper pid, but fall back to the package-only log match: the
     // VM Service log line carries the real (inner) pid, which is what matters.
-    const location = this.discoverVmService(packageName, pid)
+    const location = known
+      ?? this.discoverVmService(packageName, pid)
       ?? this.discoverVmService(packageName);
     if (!location) return undefined;
 
@@ -164,7 +193,13 @@ export class FlutterUiTreeBackend {
     } catch (error) {
       // A stale VM Service port/token after an app restart is the common case.
       this.disposeSession();
-      if (error instanceof UiTreeUnavailableError) throw error;
+      if (error instanceof UiTreeUnavailableError) {
+        const redacted = redactSecrets(error.message);
+        if (redacted !== error.message) {
+          throw new UiTreeUnavailableError(redacted, error.code, error.details);
+        }
+        throw error;
+      }
       throw new UiTreeUnavailableError(
         redactSecrets(error instanceof Error ? error.message : String(error)),
         "FLUTTER_UI_TREE_FAILED",

@@ -1,8 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Jimp } from "jimp";
 import { screenshotTools } from "./screenshot-tools.js";
 import type { ToolContext } from "./context.js";
 import { screenMeta } from "./meta/screen-meta.js";
+import { compressScreenshot } from "../utils/image.js";
 
 function findHandler(name: string) {
   const def = screenshotTools.find((t) => t.tool.name === name);
@@ -158,5 +162,150 @@ describe("screen_capture — coordinate transform state", () => {
       originalWidth: 1206,
       originalHeight: 2622,
     });
+  });
+});
+
+/**
+ * `saveTo` — write the screenshot to disk instead of returning an inline image.
+ * Policy under test (see the `saveTo` param description):
+ *   - .png    → raw device PNG bytes, no re-encode;
+ *   - .jpg/.jpeg → JPEG at the requested quality, original resolution unless
+ *     maxWidth/maxHeight/preset is given;
+ *   - absolute paths with a whitelisted extension only; parent dir must exist;
+ *   - existing files are NEVER overwritten.
+ */
+describe("screen_capture — saveTo", () => {
+  const handler = findHandler("screen_capture");
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "screen-saveTo-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  function ctxFor(source: Buffer): ToolContext {
+    return makeCtx({
+      deviceManager: {
+        getCurrentPlatform: vi.fn(() => "android"),
+        getScreenshotBufferAsync: vi.fn(async () => source),
+        getScreenshotBuffer: vi.fn(async () => source),
+      } as any,
+    });
+  }
+
+  it("keeps the default inline image byte-identical when saveTo is absent", async () => {
+    const source = await solidPngSized(1000, 2000, 0x112233ff);
+    const expected = await compressScreenshot(source, {
+      maxWidth: 540,
+      maxHeight: 960,
+      quality: 55,
+    });
+
+    const first: any = await handler({ platform: "android" }, ctxFor(source));
+    const second: any = await handler({ platform: "android" }, ctxFor(source));
+
+    expect(first.image).toEqual({ data: expected.data, mimeType: expected.mimeType });
+    expect(second.image.data).toBe(first.image.data);
+    expect(first.content ?? []).toBeDefined();
+    // No file-result text leaked into the inline path.
+    expect(first.text ?? "").not.toContain("Screenshot saved");
+    expect(existsSync(join(dir, "unused.png"))).toBe(false);
+  });
+
+  it("writes the original PNG bytes verbatim for a .png target", async () => {
+    const source = await solidPngSized(300, 500, 0x445566ff);
+    const target = join(dir, "shot.png");
+
+    const res: any = await handler({ platform: "android", saveTo: target }, ctxFor(source));
+
+    expect(readFileSync(target).equals(source)).toBe(true);
+    expect(res.image).toBeUndefined();
+    expect(res.text).toBe(
+      `Screenshot saved: ${target} (${source.length} bytes, image/png, 300x500)`,
+    );
+  });
+
+  it("encodes a .jpg target as JPEG at the original resolution", async () => {
+    const source = await solidPngSized(400, 700, 0x778899ff);
+    const target = join(dir, "shot.jpg");
+
+    const res: any = await handler(
+      { platform: "android", saveTo: target, quality: 40 },
+      ctxFor(source),
+    );
+
+    const written = readFileSync(target);
+    // JPEG SOI marker.
+    expect(written.subarray(0, 2).toString("hex")).toBe("ffd8");
+    expect(written.equals(source)).toBe(false);
+    const decoded = await Jimp.read(written);
+    expect(decoded.width).toBe(400);
+    expect(decoded.height).toBe(700);
+    expect(res.text).toBe(
+      `Screenshot saved: ${target} (${written.length} bytes, image/jpeg, 400x700)`,
+    );
+  });
+
+  it("rejects a relative path", async () => {
+    const source = await solidPngSized(10, 10, 0x000000ff);
+    await expect(
+      handler({ platform: "android", saveTo: "shots/out.png" }, ctxFor(source)),
+    ).rejects.toThrow(/must be an absolute path/);
+  });
+
+  it("rejects an unsupported extension", async () => {
+    const source = await solidPngSized(10, 10, 0x000000ff);
+    await expect(
+      handler({ platform: "android", saveTo: join(dir, "out.bmp") }, ctxFor(source)),
+    ).rejects.toThrow(/must end in \.png, \.jpg or \.jpeg/);
+  });
+
+  it("rejects a missing parent directory and does not create it", async () => {
+    const source = await solidPngSized(10, 10, 0x000000ff);
+    const missingDir = join(dir, "nope");
+    const target = join(missingDir, "out.png");
+
+    await expect(
+      handler({ platform: "android", saveTo: target }, ctxFor(source)),
+    ).rejects.toThrow(/directory does not exist/);
+    expect(existsSync(missingDir)).toBe(false);
+    expect(existsSync(target)).toBe(false);
+  });
+
+  it("never overwrites an existing file", async () => {
+    const source = await solidPngSized(10, 10, 0x000000ff);
+    const target = join(dir, "exists.png");
+    writeFileSync(target, "keep-me");
+
+    await expect(
+      handler({ platform: "android", saveTo: target }, ctxFor(source)),
+    ).rejects.toThrow(/already exists/);
+    expect(readFileSync(target, "utf8")).toBe("keep-me");
+  });
+
+  it("rejects saveTo together with diff=true", async () => {
+    const source = await solidPngSized(10, 10, 0x000000ff);
+    await expect(
+      handler({ platform: "android", diff: true, saveTo: join(dir, "d.png") }, ctxFor(source)),
+    ).rejects.toThrow(/not supported with diff=true/);
+    expect(existsSync(join(dir, "d.png"))).toBe(false);
+  });
+
+  it("is advertised and dispatched through the screen meta facade", async () => {
+    const props = (screenMeta.tool.inputSchema as any).properties as Record<string, unknown>;
+    expect(props.saveTo).toBeDefined();
+
+    const source = await solidPngSized(120, 200, 0x010203ff);
+    const target = join(dir, "meta.png");
+    const res: any = await screenMeta.handler(
+      { action: "capture", platform: "android", saveTo: target },
+      ctxFor(source),
+    );
+
+    expect(readFileSync(target).equals(source)).toBe(true);
+    expect(res.text).toContain("Screenshot saved");
   });
 });

@@ -13,6 +13,7 @@ import {
   formatCompare,
   formatMonitor,
   formatCrashes,
+  formatCrashEvents,
 } from "../perf/formatter.js";
 import { PerfBaselineStore } from "../utils/perf-baseline-store.js";
 import type { PerfSnapshot, PerfCompareResult, PerfMonitorResult } from "../perf/types.js";
@@ -314,6 +315,25 @@ describe("formatCrashes", () => {
     const text = formatCrashes([], "android");
     expect(text).toContain("0 crashes detected (android)");
   });
+
+  it("formats Aurora crash events with the platform classification", () => {
+    const text = formatCrashEvents(
+      [
+        { type: "segfault", line: "host app[42]: segfault at 0" },
+        { type: "oom", line: "host kernel: Out of memory: Killed process 42" },
+      ],
+      "aurora",
+      "today",
+    );
+
+    expect(text).toContain("2 crashes detected (aurora) since today");
+    expect(text).toContain("[SEGFAULT] host app[42]: segfault at 0");
+    expect(text).toContain("[OOM] host kernel: Out of memory");
+  });
+
+  it("formats zero Aurora crash events", () => {
+    expect(formatCrashEvents([], "aurora")).toBe("0 crashes detected (aurora)");
+  });
 });
 
 // ── PerfBaselineStore tests ──
@@ -479,6 +499,57 @@ describe("performance tool handlers", () => {
     const result = (await handler({ platform: "android" }, mockCtx())) as { text: string };
 
     expect(result.text).toContain("0 crashes detected");
+  });
+
+  it("performance_crashes reads Aurora crash events through the crash-log capability", async () => {
+    const handler = findHandler("performance_crashes");
+    const listCrashes = vi.fn(() => [
+      { type: "segfault", line: "2026-11-24T09:42:01+0300 host app[42]: segfault at 0" },
+      { type: "oom", line: "2026-11-24T09:43:00+0300 host kernel: Out of memory: Killed process 42" },
+    ]);
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "aurora",
+      getAdapter: () => ({ platform: "aurora", listCrashes }),
+    });
+
+    const result = (await handler(
+      { platform: "aurora", packageName: "ru.example.App", since: "today", deviceId: "emulator" },
+      ctx,
+    )) as { text: string; isError?: boolean };
+
+    expect(listCrashes).toHaveBeenCalledWith({
+      package: "ru.example.App",
+      since: "today",
+    });
+    expect(result.text).toContain("2 crashes detected (aurora) since today");
+    expect(result.text).toContain("[SEGFAULT]");
+    expect(result.text).toContain("[OOM]");
+    expect(result.isError).toBe(true);
+  });
+
+  it("performance_crashes reports an empty Aurora journal without error", async () => {
+    const handler = findHandler("performance_crashes");
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "aurora",
+      getAdapter: () => ({ platform: "aurora", listCrashes: () => [] }),
+    });
+
+    const result = (await handler({ platform: "aurora" }, ctx)) as { text: string; isError?: boolean };
+
+    expect(result.text).toBe("0 crashes detected (aurora)");
+    expect(result.isError).toBeUndefined();
+  });
+
+  it("performance_crashes is honest when the Aurora adapter lacks crash logs", async () => {
+    const handler = findHandler("performance_crashes");
+    const ctx = mockCtx({
+      getCurrentPlatform: () => "aurora",
+      getAdapter: () => ({ platform: "aurora" }),
+    });
+
+    const result = (await handler({ platform: "aurora" }, ctx)) as { text: string };
+
+    expect(result.text).toBe("Crash listing is not supported for aurora.");
   });
 
   it("performance_snapshot validates invalid package name", async () => {

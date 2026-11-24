@@ -54,11 +54,11 @@ export function unquoteDumpValue(raw: string): string {
   if (text.startsWith('"') && text.endsWith('"') && text.length >= 2) {
     text = text.slice(1, -1);
   }
-  return text
-    .replace(/\\"/g, '"')
-    .replace(/\\n/g, "\n")
-    .replace(/\\t/g, "\t")
-    .replace(/\\\\/g, "\\");
+  return text.replace(/\\(["nt\\])/g, (_match, ch: string) => {
+    if (ch === "n") return "\n";
+    if (ch === "t") return "\t";
+    return ch;
+  });
 }
 
 function readQuotedProperty(

@@ -4,14 +4,14 @@ import { performanceTools } from "../performance-tools.js";
 const { meta, aliases } = createMetaTool({
   name: "performance",
   description:
-    "Performance Lab. Metrics, baselines, monitoring, crashes, Android framestats, bounded native Perfetto/xctrace/CDP traces, and private Android HPROF, iOS Allocations, or Chrome heap artifacts with metadata-only diffs.",
+    "Performance Lab. Metrics, baselines, monitoring, crashes (Android, Desktop, and Aurora crash-log listing), Android framestats, bounded native Perfetto/xctrace/CDP traces, and private Android HPROF, iOS Allocations, or Chrome heap artifacts with metadata-only diffs.",
   tools: performanceTools,
   prefix: "performance_",
   extraSchema: {
     platform: {
       type: "string",
-      enum: ["android", "ios", "desktop", "browser"],
-      description: "Target platform. Traces and heap capture support Android, iOS Simulator, and browser.",
+      enum: ["android", "ios", "desktop", "browser", "aurora"],
+      description: "Target platform. Traces and heap capture support Android, iOS Simulator, and browser. Crash listing also supports Aurora.",
     },
     packageName: {
       type: "string",

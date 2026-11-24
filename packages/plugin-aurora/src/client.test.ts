@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { existsSync, mkdtempSync, rmSync, writeFileSync, chmodSync, unlinkSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, chmodSync, unlinkSync } from "fs";
 import { tmpdir, platform } from "os";
 import { delimiter, join } from "path";
 
@@ -197,5 +197,103 @@ exit 1
       state: "connected",
       isSimulator: false,
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLogs / crashList — argv pass-through to audb
+// ---------------------------------------------------------------------------
+
+describeUnix("AuroraClient — logs and crash list argv", () => {
+  let workDir: string;
+  let argsFile: string;
+  let savedPath: string | undefined;
+
+  function installFakeAudb(body: string): void {
+    const fakeAudb = join(workDir, "audb");
+    writeFileSync(fakeAudb, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\n${body}\n`);
+    chmodSync(fakeAudb, 0o755);
+  }
+
+  function readArgs(): string[] {
+    return readFileSync(argsFile, "utf-8").trimEnd().split("\n");
+  }
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "cim-aurora-logs-"));
+    argsFile = join(workDir, "args.txt");
+    savedPath = process.env.PATH;
+    process.env.PATH = `${workDir}${delimiter}${savedPath ?? ""}`;
+  });
+
+  afterEach(() => {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("getLogs maps level/grep/since/lines onto `audb logs` flags", () => {
+    installFakeAudb(`printf '%s' '{"ok":true,"schemaVersion":1,"deviceId":"emulator","data":{"output":"journal line"}}'`);
+
+    const output = new AuroraClient().getLogs({
+      lines: 42,
+      priority: "err",
+      grep: "segfault",
+      since: "1 hour ago",
+    });
+
+    expect(output).toBe(
+      '{"ok":true,"schemaVersion":1,"deviceId":"emulator","data":{"output":"journal line"}}',
+    );
+    expect(readArgs()).toEqual([
+      "logs",
+      "-n", "42",
+      "--priority", "err",
+      "--grep", "segfault",
+      "--since", "1 hour ago",
+    ]);
+  });
+
+  it("crashList builds `crash list [package] --since --lines --json` and parses events", () => {
+    installFakeAudb(`printf '%s' '{"ok":true,"schemaVersion":1,"deviceId":"emulator","data":{"count":1,"events":[{"type":"segfault","line":"2026-11-24T09:42:01+0300 host app[42]: segfault at 0"}],"nativeBacktraceAvailable":false,"package":"ru.example.App","since":"today"}}'`);
+
+    const events = new AuroraClient().crashList({
+      package: "ru.example.App",
+      since: "today",
+      lines: 250,
+    });
+
+    expect(readArgs()).toEqual([
+      "crash", "list",
+      "ru.example.App",
+      "--since", "today",
+      "--lines", "250",
+      "--json",
+    ]);
+    expect(events).toEqual([
+      { type: "segfault", line: "2026-11-24T09:42:01+0300 host app[42]: segfault at 0" },
+    ]);
+  });
+
+  it("crashList omits filters that were not supplied and returns [] on an empty journal", () => {
+    installFakeAudb(`printf '%s' '{"ok":true,"schemaVersion":1,"deviceId":"emulator","data":{"count":0,"events":[],"nativeBacktraceAvailable":false,"package":null,"since":"@1700000000"}}'`);
+
+    expect(new AuroraClient().crashList()).toEqual([]);
+    expect(readArgs()).toEqual(["crash", "list", "--json"]);
+  });
+
+  it("crashList drops malformed event entries instead of throwing", () => {
+    installFakeAudb(`printf '%s' '{"ok":true,"schemaVersion":1,"deviceId":"emulator","data":{"events":[null,{"type":"oom"},{"type":"fatal","line":""},{"type":"abort","line":"boom"}],"count":4}}'`);
+
+    expect(new AuroraClient().crashList({ since: "today" })).toEqual([
+      { type: "abort", line: "boom" },
+    ]);
+  });
+
+  it("crashList rejects an injected package id before spawning audb", () => {
+    installFakeAudb("exit 0");
+
+    expect(() => new AuroraClient().crashList({ package: "ru.example.App;rm -rf /" })).toThrow();
+    expect(existsSync(argsFile)).toBe(false);
   });
 });

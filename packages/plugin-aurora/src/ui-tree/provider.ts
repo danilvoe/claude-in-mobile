@@ -11,6 +11,7 @@
  */
 
 import type { AuroraClient, RunningApp } from "../client.js";
+import { errorCode } from "../flutter/errors.js";
 import { FlutterUiTreeBackend } from "./flutter.js";
 import { QtiumUiTreeBackend } from "./qtium.js";
 import {
@@ -76,7 +77,7 @@ export class AuroraUiTreeProvider {
   private readonly qtium: QtiumUiTreeBackend;
   private activePackage?: string;
   private cache?: CacheEntry;
-  private inFlight?: Promise<string>;
+  private inFlight?: { key: string; promise: Promise<string> };
   private readonly pidResolution = new Map<number, PidResolution>();
 
   constructor(client: AuroraClient, options: AuroraUiTreeOptions = {}) {
@@ -103,6 +104,8 @@ export class AuroraUiTreeProvider {
   setActivePackage(packageName: string | undefined): void {
     this.activePackage = packageName;
     this.pidResolution.clear();
+    // The VM Service session belongs to the previous app.
+    this.flutter.invalidate();
     this.invalidate();
   }
 
@@ -110,9 +113,13 @@ export class AuroraUiTreeProvider {
     return this.activePackage;
   }
 
+  /**
+   * Invalidate the cached XML only. Input actions call this after every tap;
+   * tearing down the Flutter VM session here would force re-discovery from a
+   * journal line that may already be gone.
+   */
   invalidate(): void {
     this.cache = undefined;
-    this.flutter.invalidate();
   }
 
   close(): void {
@@ -135,12 +142,15 @@ export class AuroraUiTreeProvider {
       return this.cache.xml;
     }
 
-    if (this.inFlight) return await this.inFlight;
+    // A concurrent dump for a different app must not be shared.
+    const key = `${target.packageName}:${target.pid}`;
+    if (this.inFlight?.key === key) return await this.inFlight.promise;
 
-    this.inFlight = this.dump(target).finally(() => {
-      this.inFlight = undefined;
+    const promise = this.dump(target).finally(() => {
+      if (this.inFlight?.promise === promise) this.inFlight = undefined;
     });
-    return await this.inFlight;
+    this.inFlight = { key, promise };
+    return await promise;
   }
 
   /**
@@ -213,9 +223,11 @@ export class AuroraUiTreeProvider {
       this.client.activateApp(app.package);
     }
 
-    const flutterPid = this.flutter.resolveAppPid(app.pid);
-    const vmService = this.flutter.findVmService(app.package);
-    if (flutterPid !== undefined || vmService !== undefined) {
+    // A VM Service log line proves a Flutter debug build even when maps probing
+    // is impossible (non-root SSH user on a physical device).
+    const flutterEvidence = this.flutter.detectApp(app.package, app.pid);
+    if (flutterEvidence) {
+      const vmService = flutterEvidence.vmService ?? this.flutter.findVmService(app.package);
       if (!vmService) {
         return {
           ok: false,
@@ -236,9 +248,15 @@ export class AuroraUiTreeProvider {
     let bridgeActive = this.qtium.isBridgeActive();
     let hookPermission = this.qtium.hasHookPermission();
     if ((!bridgeActive || !hookPermission) && options.enableAutoTest !== false) {
-      this.enableAutoTest();
-      bridgeActive = await this.waitForBridge(15_000);
-      hookPermission = this.qtium.hasHookPermission();
+      try {
+        this.enableAutoTest();
+        bridgeActive = await this.waitForBridge(15_000);
+        hookPermission = this.qtium.hasHookPermission();
+      } catch {
+        // No root SSH: developer-mode setup cannot run. Report the bridge as
+        // inactive below instead of throwing an opaque audb error.
+        bridgeActive = false;
+      }
     }
 
     let appHooked = this.qtium.isAppHooked(app.pid);
@@ -324,7 +342,7 @@ export class AuroraUiTreeProvider {
       if (error instanceof UiTreeUnavailableError) throw error;
       throw new UiTreeUnavailableError(
         error instanceof Error ? error.message : String(error),
-        "AURORA_UI_TREE_FAILED",
+        errorCode(error, "AURORA_UI_TREE_FAILED"),
       );
     }
   }
@@ -333,18 +351,17 @@ export class AuroraUiTreeProvider {
    * audb reports the outer sailjail/firejail pid; the engine/hook lives in a
    * nested child. Cache the mapping briefly because hints call the tree after
    * every input action.
+   *
+   * Detection order: privileged maps probing (nested pid), then the journal VM
+   * Service line (works without root and names the inner pid), then qtium.
    */
   private resolveBackend(target: TargetApp): PidResolution {
     const cached = this.pidResolution.get(target.pid);
     if (cached && Date.now() - cached.at < PID_RESOLUTION_TTL_MS) return cached;
 
-    const flutterPid = this.flutter.resolveAppPid(target.pid);
-    const vmService = flutterPid === undefined
-      ? this.flutter.findVmService(target.packageName)
-      : undefined;
-    const flutterInner = flutterPid ?? vmService?.pid;
-    const entry: PidResolution = flutterInner !== undefined
-      ? { innerPid: flutterInner, backend: "flutter", at: Date.now() }
+    const flutterEvidence = this.flutter.detectApp(target.packageName, target.pid);
+    const entry: PidResolution = flutterEvidence !== undefined
+      ? { innerPid: flutterEvidence.innerPid, backend: "flutter", at: Date.now() }
       : {
         innerPid: this.qtium.resolveAppPid(target.pid) ?? target.pid,
         backend: "qtium",
@@ -356,7 +373,8 @@ export class AuroraUiTreeProvider {
 
   private resolveTarget(explicit?: string): TargetApp {
     const running = this.runningApps();
-    const packageName = explicit ?? this.env.AURORA_UI_APP ?? this.activePackage;
+    // The app launched through MCP wins over the static env override.
+    const packageName = explicit ?? this.activePackage ?? this.env.AURORA_UI_APP;
 
     if (packageName) {
       const app = running.find((entry) => entry.package === packageName);

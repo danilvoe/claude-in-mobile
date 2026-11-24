@@ -91,8 +91,44 @@ export interface ShellAdapter {
     tag?: string;
     lines?: number;
     package?: string;
+    /** Lower time bound for the log query (Aurora: `journalctl --since`). */
+    since?: string;
+    /** Substring/regex filter applied by the device logger (Aurora: `journalctl --grep`). */
+    grep?: string;
   }, deviceId?: string): string;
   clearLogs(deviceId?: string): string;
+}
+
+// ============ Crash log capability ============
+
+/** One crash signal reported by a platform's crash log. */
+export interface CrashEventEntry {
+  /**
+   * Platform classification of the crash signal. Aurora/audb uses
+   * `oom` | `segfault` | `abort` | `fatal` | `terminated`.
+   */
+  type: string;
+  /** Raw log line that matched the crash signature. */
+  line: string;
+}
+
+export interface CrashQueryOptions {
+  /** Restrict to a single app package. */
+  package?: string;
+  /** Lower time bound for the query (Aurora: `journalctl --since`). */
+  since?: string;
+  /** Maximum number of log lines scanned (Aurora: `audb crash list --lines`). */
+  lines?: number;
+}
+
+/**
+ * Crash log capability: report crash signals recorded by the OS journal.
+ *
+ * Distinct from `ShellAdapter.getLogs` so platforms without a dedicated
+ * crash index do not have to fake one.
+ */
+export interface CrashLogAdapter {
+  listCrashes(options?: CrashQueryOptions): CrashEventEntry[] | Promise<CrashEventEntry[]>;
 }
 
 // ============ File transfer capability ============
@@ -301,6 +337,10 @@ export function hasShell(adapter: CorePlatformAdapter): adapter is CorePlatformA
     "getLogs" in adapter &&
     "clearLogs" in adapter
   );
+}
+
+export function hasCrashLogs(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & CrashLogAdapter {
+  return "listCrashes" in adapter;
 }
 
 export function hasFileTransfer(adapter: CorePlatformAdapter): adapter is CorePlatformAdapter & FileTransferAdapter {

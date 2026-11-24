@@ -28,10 +28,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `aurora_ui_setup` tool: enables developer-mode UI autotesting via
   `SetAutoTestUIEnabled true`, restarts `sailjaild`, and restarts the target app
   only when `restartApp: true` (restarting resets app state). It also raises the
-  target app to the foreground. Requires root and is idempotent.
+  target app to the foreground. Root is required for the Qt/QML path; it is
+  idempotent.
 - `app(action:'launch')` on Aurora is idempotent: launching an already-running
   app raises its window through lipstick (`WindowModel.launchProcess`) instead of
   failing with `ApplicationAlreadyRunning`.
+- `system(action:'logs')` on Aurora now forwards `since`, `grep` and `priority`
+  to `audb logs` (previously only `lines` reached the device, so time filters
+  silently did nothing).
+- `performance(action:'crashes')` now supports Aurora through `audb crash list`
+  (`since`, optional `package`).
+- `screen(action:'capture', saveTo: "/abs/file.png")` writes the screenshot to
+  disk and returns the path instead of inline base64. Absolute paths only, the
+  parent directory must exist, existing files are never overwritten, and `.jpg`
+  keeps the original resolution unless sizing options are passed.
+- Flutter backend detection without root: when `/proc/<pid>/maps` is unreadable
+  (physical devices), the VM Service journal line selects Flutter and supplies
+  the inner pid. `audb shell --root` is now required only for the Qt/QML path.
 
 ### Fixed
 - Qt/QML UI trees now work: the qtium `execute` payload must be
@@ -55,6 +68,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (0.4.2+) and probes connection state with `audb status`; the legacy table
   parser is kept as a fallback for older audb releases. Previously a running
   Aurora emulator was invisible to the MCP server.
+- Input actions no longer tear down the Flutter VM Service session: tapping or
+  swiping only invalidates the cached XML, so a long-running debug app keeps
+  working after its journal line rotated away.
+- `qtium-bridge` state is compared exactly: `systemctl is-active` returning
+  `inactive` no longer counts as “active”, which made `aurora_ui_setup` report
+  success while the bridge was stopped.
+- audb failures keep the tail of stderr in the error message, so the
+  `ApplicationAlreadyRunning` recovery path actually triggers.
+- Missing/failed `ssh` for the device tunnel is reported as
+  `SSH_TUNNEL_SPAWN_FAILED` instead of an unhandled process error.
+- Qtium payload booleans accept string forms (`"false"`), the tunnel is
+  re-opened once after a transport failure, and coordinate scaling works in
+  both directions using a uniform device-pixel ratio.
+- `ui(action:'find_tap')`/`tap_text` invalidate the cached tree after tapping.
+- `screen(action:'annotate')` reports the UI-tree error in its text instead of
+  silently returning a plain screenshot.
 
 ## [4.4.1] — 2026-09-13
 

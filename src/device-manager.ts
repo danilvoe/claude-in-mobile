@@ -321,7 +321,8 @@ export class DeviceManager {
   getLogs(
     options: {
       platform?: Platform; level?: string; tag?: string;
-      lines?: number; package?: string; deviceId?: string;
+      lines?: number; package?: string; since?: string; grep?: string;
+      deviceId?: string;
     } = {},
   ): string {
     return this.logProxy.getLogs(options);

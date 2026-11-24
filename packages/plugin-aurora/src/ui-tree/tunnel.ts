@@ -66,9 +66,26 @@ export class SshTunnel {
     child.once("exit", () => {
       exited = true;
     });
+    // Without this handler a missing/failed ssh binary is an unhandled
+    // 'error' event and takes the whole MCP server down.
+    let spawnError: Error | undefined;
+    child.once("error", (error) => {
+      spawnError = error;
+    });
 
     const deadline = Date.now() + (options.connectTimeoutMs ?? 8_000);
     while (Date.now() < deadline) {
+      if (spawnError) {
+        try {
+          child.kill("SIGTERM");
+        } catch {
+          /* already gone */
+        }
+        throw new UiTreeUnavailableError(
+          `Failed to start ssh: ${spawnError.message}`,
+          "SSH_TUNNEL_SPAWN_FAILED",
+        );
+      }
       if (exited) {
         throw new UiTreeUnavailableError(
           `SSH tunnel to ${options.host} exited before becoming ready${stderr ? `: ${stderr.trim()}` : "."}`,

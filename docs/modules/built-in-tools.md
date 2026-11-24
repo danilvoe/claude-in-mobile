@@ -207,7 +207,7 @@ app(action: 'uninstall', package: 'com.example.myapp', platform: 'harmony')
 | Action | Parameters | Purpose |
 |--------|-----------|---------|
 | `shell` | `command`, optional `platform`, `deviceId` | Execute a validated shell command on a device |
-| `logs` | optional `level`, `tag`, `lines`, `package` | Read the current platform's log buffer |
+| `logs` | optional `level`, `tag`, `lines`, `package`, `since`, `grep` | Read the current platform's log buffer (`since`/`grep` are journald filters for Aurora) |
 | `wait_log` | `pattern`, optional `timeoutMs`, `pollIntervalMs`, `contextLines`, `clearFirst` | Wait for a regex in device logs |
 | `clear_logs` | optional `platform`, `deviceId` | Clear the log buffer |
 | `pid_of` | `package` | Get an Android process ID |
@@ -501,7 +501,7 @@ accessibility(action: 'rules')
 | `baseline` | `name`, `samples?`, `overwrite?`, target fields | Save an averaged metrics baseline |
 | `compare` | `name`, threshold fields, target fields | Compare current metrics with a baseline |
 | `monitor` | `duration?`, `interval?`, target fields | Sample metrics over a bounded interval |
-| `crashes` | target fields | Query recent crash and ANR signals |
+| `crashes` | target fields, `since?` (Aurora) | Query recent crash and ANR signals; Aurora lists journal crash events via `audb crash list` |
 | `framestats` | `packageName?`, `deviceId?` | Measure Android frame timing and jank |
 | `trace_start` | `platform`, `duration?`, `preset?`, target fields | Start Android Perfetto, iOS xctrace, or browser CDP tracing |
 | `trace_stop` | `traceId` | Finalize the native trace and return its summary/artifact metadata |

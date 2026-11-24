@@ -1,3 +1,6 @@
+import { lstatSync, statSync, writeFileSync } from "node:fs";
+import type { Stats } from "node:fs";
+import { dirname, extname, isAbsolute, resolve } from "node:path";
 import type { ToolDefinition } from "./registry.js";
 import type { Platform } from "../device-manager.js";
 import { defineTool, z } from "./define-tool.js";
@@ -7,6 +10,7 @@ import { textResult } from "../utils/tool-result.js";
 import type { ToolResult } from "../utils/tool-result.js";
 import { sleep } from "../utils/sleep.js";
 import { SCREEN } from "../constants/timeouts.js";
+import { ValidationError } from "../errors.js";
 import {
   annotateScreenshot,
   compareScreenshots,
@@ -46,6 +50,93 @@ const DIMENSION_MAX = 2000;
 const QUALITY_MIN = 1;
 const QUALITY_MAX = 100;
 
+/** Extensions accepted by `saveTo`; anything else is rejected in the handler. */
+const SAVE_TO_EXTENSIONS = [".png", ".jpg", ".jpeg"] as const;
+
+interface SaveTarget {
+  absolutePath: string;
+  format: "png" | "jpeg";
+}
+
+/**
+ * True when ANY directory entry exists at `path`, including a dangling symlink
+ * (`existsSync` follows links and would report false for those, letting a
+ * write land on the link target).
+ */
+function pathEntryExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Validate a `saveTo` argument into a concrete write target.
+ *
+ * Policy (documented in the tool description):
+ *   - absolute paths only; `.png` / `.jpg` / `.jpeg` only;
+ *   - the parent directory must already exist — we never create directories;
+ *   - an existing file is never overwritten (fail with a clear message).
+ */
+function resolveSaveTarget(saveTo: string): SaveTarget {
+  if (saveTo.trim().length === 0) {
+    throw new ValidationError(
+      "saveTo is empty. Pass an absolute path ending in .png, .jpg or .jpeg.",
+    );
+  }
+  if (!isAbsolute(saveTo.trim())) {
+    throw new ValidationError(
+      `saveTo must be an absolute path (got "${saveTo}"). Relative paths are not accepted.`,
+    );
+  }
+
+  const absolutePath = resolve(saveTo.trim());
+  const extension = extname(absolutePath).toLowerCase();
+  if (!(SAVE_TO_EXTENSIONS as readonly string[]).includes(extension)) {
+    throw new ValidationError(
+      `saveTo must end in .png, .jpg or .jpeg (got "${extension || "no extension"}").`,
+    );
+  }
+
+  const directory = dirname(absolutePath);
+  let directoryStat: Stats;
+  try {
+    directoryStat = statSync(directory);
+  } catch {
+    throw new ValidationError(
+      `saveTo directory does not exist: ${directory}. Create it first — screen(action:'capture') never creates directories.`,
+    );
+  }
+  if (!directoryStat.isDirectory()) {
+    throw new ValidationError(`saveTo parent path is not a directory: ${directory}.`);
+  }
+  if (pathEntryExists(absolutePath)) {
+    throw new ValidationError(
+      `saveTo target already exists: ${absolutePath}. screen(action:'capture') never overwrites files — pick another path.`,
+    );
+  }
+
+  return { absolutePath, format: extension === ".png" ? "png" : "jpeg" };
+}
+
+/** Write the screenshot bytes, failing (never truncating) if the file appeared meanwhile. */
+function writeScreenshotBytes(target: SaveTarget, bytes: Buffer): void {
+  try {
+    // "wx" is race-safe: exclusive create, no silent overwrite even if the file
+    // appeared between resolveSaveTarget() and this write.
+    writeFileSync(target.absolutePath, bytes, { flag: "wx", mode: 0o600 });
+  } catch (error: unknown) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new ValidationError(
+        `saveTo target already exists: ${target.absolutePath}. screen(action:'capture') never overwrites files — pick another path.`,
+      );
+    }
+    throw error;
+  }
+}
+
 async function waitForStableScreenshot(getBuffer: () => Promise<Buffer>): Promise<Buffer> {
   let prev = await getBuffer();
   for (let i = 0; i < SCREEN.STABLE_MAX_RETRIES; i++) {
@@ -63,7 +154,8 @@ async function waitForStableScreenshot(getBuffer: () => Promise<Buffer>): Promis
 export const screenshotTools: ToolDefinition[] = [
   defineTool({
     name: "screen_capture",
-    description: "Take screenshot. Auto-compressed. Use diff=true to see only changes.",
+    description:
+      "Take screenshot. Auto-compressed. Use diff=true to see only changes. Use saveTo='/abs/path.png' to write the image to disk and get a path back instead of an inline image (saves tokens).",
     schema: z.object({
       platform: platformEnum,
       compress: z
@@ -124,6 +216,12 @@ export const screenshotTools: ToolDefinition[] = [
         .describe(
           "Wait for UI to stabilize before capturing. Takes two captures ~300ms apart and compares them; retries up to 3 times until change < 2%. Useful after navigation or animations.",
         ),
+      saveTo: z
+        .string()
+        .optional()
+        .describe(
+          "Absolute path to write the screenshot to instead of returning an inline image, e.g. '/home/me/shots/login.png'. Must end in .png (raw, uncompressed device-resolution PNG) or .jpg/.jpeg (JPEG encoded at the requested quality; preset/maxWidth/maxHeight still apply, and the original resolution is kept when neither is given). The parent directory must already exist. Existing files are NEVER overwritten. Not supported with diff=true. When set, `compress` is ignored because the extension picks the encoding.",
+        ),
       preset: z.string().optional(),
       deviceId: deviceIdField,
     }),
@@ -134,6 +232,18 @@ export const screenshotTools: ToolDefinition[] = [
       const diffMode = args.diff === true;
       const stableMode = args.waitForStable === true;
       const diffThreshold = args.diffThreshold;
+      const saveTo = args.saveTo;
+
+      // A diff result may be a cropped region, so "the screenshot" is ambiguous.
+      // Fail fast instead of silently ignoring saveTo.
+      if (saveTo !== undefined && diffMode) {
+        throw new ValidationError(
+          "saveTo is not supported with diff=true. Call screen(action:'capture') without diff to save a full screenshot to disk.",
+        );
+      }
+      // Validate the target BEFORE touching the device so a bad path does not
+      // cost a capture round-trip. The write itself re-checks exclusivity.
+      const saveTarget = saveTo !== undefined ? resolveSaveTarget(saveTo) : undefined;
 
       // Precedence: explicit param → preset → medium default. Because the
       // params are now optional (no zod default), an unset value is undefined
@@ -207,6 +317,32 @@ export const screenshotTools: ToolDefinition[] = [
         ? await waitForStableScreenshot(captureBuffer)
         : await captureBuffer();
       ctx.lastScreenshotMap.set(stateKey, pngBuffer);
+
+      if (saveTarget !== undefined) {
+        const dimensions = readPngDimensions(pngBuffer);
+        let bytes: Buffer;
+        let mimeType: string;
+        if (saveTarget.format === "png") {
+          // Raw device PNG — no resize, no re-encode.
+          bytes = pngBuffer;
+          mimeType = "image/png";
+        } else {
+          // JPEG: honour an explicit/preset size, otherwise keep the original
+          // resolution so saving to disk does not silently downscale.
+          const jpeg = await compressScreenshot(pngBuffer, {
+            maxWidth: args.maxWidth ?? preset?.maxWidth ?? dimensions.width,
+            maxHeight: args.maxHeight ?? preset?.maxHeight ?? dimensions.height,
+            quality: compressOptions.quality,
+            turbo: ctx.turboDefault,
+          });
+          bytes = Buffer.from(jpeg.data, "base64");
+          mimeType = jpeg.mimeType;
+        }
+        writeScreenshotBytes(saveTarget, bytes);
+        return textResult(
+          `Screenshot saved: ${saveTarget.absolutePath} (${bytes.length} bytes, ${mimeType}, ${dimensions.width}x${dimensions.height})`,
+        );
+      }
 
       if (!compress) {
         const dimensions = readPngDimensions(pngBuffer);
@@ -286,10 +422,12 @@ export const screenshotTools: ToolDefinition[] = [
       const pngBuffer = await ctx.deviceManager.getScreenshotBufferAsync(currentPlat, deviceId);
 
       let uiElements: UiElement[] = [];
+      let annotateError = "";
       try {
         uiElements = (await getUiElements(ctx, currentPlat, deviceId)).elements;
       } catch (error: unknown) {
         const message = error instanceof Error ? error.message : String(error);
+        annotateError = message;
         console.error(
           `[annotate_screenshot] ${currentPlat ?? "android"} UI hierarchy unavailable: ${message}`,
         );
@@ -303,7 +441,8 @@ export const screenshotTools: ToolDefinition[] = [
         });
         return {
           image: { data: result.data, mimeType: result.mimeType },
-          text: "No UI elements found to annotate. Returning plain screenshot.",
+          text: "No UI elements found to annotate. Returning plain screenshot."
+            + (annotateError ? `\nUI tree error: ${annotateError}` : ""),
         } as unknown as ToolResult;
       }
 

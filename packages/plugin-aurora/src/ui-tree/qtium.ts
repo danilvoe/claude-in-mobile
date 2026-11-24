@@ -71,8 +71,9 @@ export class QtiumUiTreeBackend {
   /** Is the bridge service running on the device? */
   isBridgeActive(): boolean {
     try {
-      const output = this.client.shellRoot("systemctl is-active qtium-bridge || true");
-      return output.trim() === "active" || output.includes("active");
+      const output = this.client.shellRoot("systemctl is-active qtium-bridge || true").trim();
+      // "inactive".includes("active") is true — compare the state exactly.
+      return output === "active" || output === "activating";
     } catch {
       return false;
     }
@@ -138,6 +139,12 @@ export class QtiumUiTreeBackend {
       return this.toSnapshot(tree, packageName);
     } catch (currentError) {
       if (currentError instanceof UiTreeSetupRequiredError) throw currentError;
+      // Transport failures and a missing screen geometry are not "this hook
+      // lacks the command" — retrying only doubles the latency.
+      if (currentError instanceof UiTreeUnavailableError
+        && ["QTIUM_TIMEOUT", "QTIUM_CONNECT_FAILED", "SCREEN_GEOMETRY_UNAVAILABLE"].includes(currentError.code)) {
+        throw currentError;
+      }
       // Newer/older hooks differ in which dump command is implemented.
       try {
         const tree = await this.dump("app:dumpTree", packageName);
@@ -145,6 +152,11 @@ export class QtiumUiTreeBackend {
         return this.toSnapshot(json, packageName);
       } catch (fallbackError) {
         if (fallbackError instanceof UiTreeSetupRequiredError) throw fallbackError;
+        // Preserve the more specific failure from the fallback attempt.
+        if (fallbackError instanceof UiTreeUnavailableError
+          && fallbackError.code !== "QTIUM_DUMP_EMPTY") {
+          throw fallbackError;
+        }
         const message = currentError instanceof Error ? currentError.message : String(currentError);
         throw new UiTreeUnavailableError(
           `Qtium UI dump failed: ${message}`,
@@ -181,8 +193,18 @@ export class QtiumUiTreeBackend {
 
   private async dump(command: string, packageName: string): Promise<QtiumResponse> {
     const device = this.client.getDeviceRecord();
-    const tunnel = await this.ensureTunnel(device.host);
-    const response = await sendCommand(tunnel.localPort, command, packageName, this.timeoutMs);
+    let tunnel = await this.ensureTunnel(device.host);
+    let response: QtiumResponse;
+    try {
+      response = await sendCommand(tunnel.localPort, command, packageName, this.timeoutMs);
+    } catch (error) {
+      const code = error instanceof UiTreeUnavailableError ? error.code : "";
+      // The cached tunnel may have died (network change, device reboot).
+      if (code !== "QTIUM_CONNECT_FAILED" && code !== "QTIUM_CONNECT_CLOSED") throw error;
+      this.close();
+      tunnel = await this.ensureTunnel(device.host);
+      response = await sendCommand(tunnel.localPort, command, packageName, this.timeoutMs);
+    }
     if (response.status !== 0) {
       const value = typeof response.value === "string" ? response.value : "";
       if (value === "unknown_app") {
@@ -237,7 +259,12 @@ function sendCommand(
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      socket.removeAllListeners();
+      // Keep a no-op error listener: destroying a socket with a pending write
+      // can emit 'error' after we removed the real handler.
+      socket.removeAllListeners("data");
+      socket.removeAllListeners("close");
+      socket.removeAllListeners("error");
+      socket.on("error", () => { /* late transport error */ });
       socket.destroy();
       if (error) reject(error);
       else if (response) resolve(response);
@@ -254,6 +281,11 @@ function sendCommand(
     socket.once("error", (error) => finish(new UiTreeUnavailableError(
       `Qtium connection failed: ${error.message}`,
       "QTIUM_CONNECT_FAILED",
+    )));
+
+    socket.once("close", () => finish(new UiTreeUnavailableError(
+      "Qtium connection closed before a response.",
+      "QTIUM_CONNECT_CLOSED",
     )));
 
     // The bridge processes commands in order, so both lines can be written at
@@ -291,10 +323,19 @@ function tryParseResponse(text: string): QtiumResponse | undefined {
   if (!text) return undefined;
   try {
     const parsed = JSON.parse(text) as QtiumResponse;
-    return typeof parsed.status === "number" ? parsed : undefined;
+    if (typeof parsed.status !== "number") return undefined;
+    // The bridge does not ack `initialize`, but if it ever does the ack has
+    // status 0 and no value; don't resolve the pending command with it.
+    if (parsed.status === 0 && typeof parsed.value !== "string") return undefined;
+    return parsed;
   } catch {
     return undefined;
   }
+}
+
+/** QML values may arrive as booleans, strings or numbers depending on the build. */
+function isFalse(value: unknown): boolean {
+  return value === false || value === "false" || value === 0 || value === "0";
 }
 
 /**
@@ -346,7 +387,7 @@ export function flattenQtiumTree(tree: unknown, packageName: string, screen: Scr
   const walk = (value: unknown, inheritedVisible: boolean): void => {
     if (value === null || typeof value !== "object") return;
     const raw = value as QtiumNode;
-    const visible = inheritedVisible && raw.visible !== false;
+    const visible = inheritedVisible && !isFalse(raw.visible);
     // Skip the whole subtree: a hidden container renders nothing.
     if (!visible) return;
 
@@ -391,7 +432,7 @@ export function flattenQtiumTree(tree: unknown, packageName: string, screen: Scr
           clickable,
           longClickable: false,
           scrollable,
-          enabled: raw.enabled !== false,
+          enabled: !isFalse(raw.enabled),
           focusable,
           focused: false,
           selected: false,
@@ -429,10 +470,15 @@ function computeScale(
   if (rootWidth !== undefined && rootHeight !== undefined && rootWidth > 0 && rootHeight > 0) {
     const logicalWidth = rootX + rootWidth;
     const logicalHeight = rootY + rootHeight;
-    return {
-      x: logicalWidth > screen.width * 1.05 ? screen.width / logicalWidth : 1,
-      y: logicalHeight > screen.height * 1.05 ? screen.height / logicalHeight : 1,
-    };
+    const ratioX = screen.width / logicalWidth;
+    const ratioY = screen.height / logicalHeight;
+    // A real device pixel ratio is uniform. When the axes disagree, the root is
+    // probably a dialog/overlay rather than the window; the smaller ratio
+    // matches the full-width axis.
+    const uniform = Math.abs(ratioX - ratioY) <= Math.max(ratioX, ratioY) * 0.05;
+    const ratio = uniform ? ratioX : Math.min(ratioX, ratioY);
+    if (!Number.isFinite(ratio) || Math.abs(ratio - 1) <= 0.05) return { x: 1, y: 1 };
+    return { x: ratio, y: ratio };
   }
 
   // Fallback for payloads without a sized root: use the visible extent.

@@ -502,6 +502,68 @@ describe("system_shell — injection denylist", () => {
   });
 });
 
+describe("system_logs", () => {
+  const handler = findHandler("system_logs");
+
+  it("forwards Aurora journald filters (since/grep/level/lines) to the log proxy", async () => {
+    const getLogs = vi.fn(() => "Nov 24 09:42:01 MyApp[123]: ERROR boom");
+    const ctx = makeMockContext({
+      deviceManager: {
+        getCurrentPlatform: vi.fn(() => "aurora"),
+        getLogs,
+      } as any,
+    });
+
+    const result = await handler({
+      platform: "aurora",
+      deviceId: "emulator",
+      level: "err",
+      lines: 42,
+      since: "1 hour ago",
+      grep: "ERROR",
+      package: "ru.example.App",
+    }, ctx);
+
+    expect(getLogs).toHaveBeenCalledTimes(1);
+    expect(getLogs).toHaveBeenCalledWith({
+      platform: "aurora",
+      deviceId: "emulator",
+      level: "err",
+      tag: undefined,
+      lines: 42,
+      package: "ru.example.App",
+      since: "1 hour ago",
+      grep: "ERROR",
+    });
+    expect((result as { text: string }).text).toContain("ERROR boom");
+  });
+
+  it("clamps lines to 500 but keeps since/grep", async () => {
+    const getLogs = vi.fn(() => "line");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "aurora"), getLogs } as any,
+    });
+
+    await handler({ platform: "aurora", lines: 5000, since: "today", grep: "systemd" }, ctx);
+
+    expect(getLogs).toHaveBeenCalledWith(
+      expect.objectContaining({ lines: 500, since: "today", grep: "systemd" }),
+    );
+  });
+
+  it("returns a placeholder when the journal is empty", async () => {
+    const ctx = makeMockContext({
+      deviceManager: {
+        getCurrentPlatform: vi.fn(() => "aurora"),
+        getLogs: vi.fn(() => ""),
+      } as any,
+    });
+
+    const result = await handler({ platform: "aurora", since: "today" }, ctx);
+    expect((result as { text: string }).text).toBe("(no logs)");
+  });
+});
+
 describe("system meta action reachability", () => {
   it("dispatches wait_log, pid_of, and is_running through the primary surface", async () => {
     const ctx = makeMockContext({
@@ -536,5 +598,25 @@ describe("system meta action reachability", () => {
     expect((waited as { text: string }).text).toContain("Match found");
     expect((pid as { text: string }).text).toBe("4242");
     expect((running as { text: string }).text).toBe("true (pid=4242)");
+  });
+
+  it("accepts since/grep on the meta logs action", async () => {
+    const getLogs = vi.fn(() => "journal line");
+    const ctx = makeMockContext({
+      deviceManager: { getCurrentPlatform: vi.fn(() => "aurora"), getLogs } as any,
+    });
+
+    const result = await systemMeta.handler({
+      action: "logs",
+      platform: "aurora",
+      since: "today",
+      grep: "segfault",
+      lines: 20,
+    }, ctx);
+
+    expect(getLogs).toHaveBeenCalledWith(
+      expect.objectContaining({ platform: "aurora", since: "today", grep: "segfault", lines: 20 }),
+    );
+    expect((result as { text: string }).text).toBe("journal line");
   });
 });

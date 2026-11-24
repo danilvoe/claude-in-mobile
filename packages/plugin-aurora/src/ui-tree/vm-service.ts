@@ -105,7 +105,12 @@ export class VmServiceClient {
     const socket = this.socket;
     this.socket = undefined;
     if (socket) {
-      socket.removeAllListeners();
+      // Closing a socket can emit 'error' (ECONNRESET/abnormal close); keep a
+      // no-op handler so it does not become an uncaught EventEmitter error.
+      socket.removeAllListeners("message");
+      socket.removeAllListeners("close");
+      socket.removeAllListeners("error");
+      socket.on("error", () => { /* late close error */ });
       try {
         socket.close();
       } catch {

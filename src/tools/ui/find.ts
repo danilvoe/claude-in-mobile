@@ -116,6 +116,7 @@ export const uiFindTap = defineTool({
     }
 
     await ctx.deviceManager.tap(match.element.centerX, match.element.centerY, currentPlatform, undefined, deviceId);
+    ctx.invalidateUiTreeCache(currentPlatform ?? undefined);
 
     return textResult(
       `Tapped "${description}" (${match.confidence}% confidence)\n` +
@@ -157,6 +158,7 @@ export const uiTapText = defineTool({
         return textResult(`No element found with text "${text}". Use ui(action:'tree') to inspect available elements.`);
       }
       await ctx.deviceManager.tap(target.centerX, target.centerY, "aurora", undefined, deviceId);
+      ctx.invalidateUiTreeCache("aurora");
       return textResult(`OK: Tapped "${text}" at (${target.centerX}, ${target.centerY}).`);
     }
 

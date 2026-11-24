@@ -12,6 +12,9 @@ import type {
   AppInventoryAdapter,
   AppManagementAdapter,
   CorePlatformAdapter,
+  CrashEventEntry,
+  CrashLogAdapter,
+  CrashQueryOptions,
   FileTransferAdapter,
   LocationAdapter,
   ShellAdapter,
@@ -35,7 +38,8 @@ export class AuroraAdapter
     ShellAdapter,
     FileTransferAdapter,
     SyncScreenshotAdapter,
-    LocationAdapter
+    LocationAdapter,
+    CrashLogAdapter
 {
   readonly platform = "aurora" as const;
   private client: AuroraClient;
@@ -202,12 +206,29 @@ export class AuroraAdapter
     tag?: string;
     lines?: number;
     package?: string;
+    since?: string;
+    grep?: string;
   } = {}): string {
-    return this.client.getLogs(options);
+    return this.client.getLogs({
+      lines: options.lines,
+      priority: options.level,
+      grep: options.grep,
+      since: options.since,
+    });
   }
 
   clearLogs(): string {
     return this.client.clearLogs();
+  }
+
+  // ============ Crash log (CrashLogAdapter) ============
+
+  listCrashes(options: CrashQueryOptions = {}): CrashEventEntry[] {
+    return this.client.crashList({
+      package: options.package,
+      since: options.since,
+      lines: options.lines,
+    });
   }
 
   // ============ File transfer (FileTransferAdapter) ============

@@ -132,6 +132,31 @@ export function formatCrashes(crashes: CrashEntry[], platform: string, since?: s
   return lines.join("\n");
 }
 
+/**
+ * Format crash events reported by a platform crash log (Aurora/audb).
+ *
+ * Keeps the platform's own classification in the tag position so the caller
+ * can tell an OOM apart from a segfault, and prints the raw journal line.
+ */
+export function formatCrashEvents(
+  events: ReadonlyArray<{ type: string; line: string }>,
+  platform: string,
+  since?: string,
+): string {
+  const sinceText = since ? ` since ${since}` : "";
+  if (events.length === 0) {
+    return `0 crashes detected (${platform})${sinceText}`;
+  }
+
+  const lines: string[] = [
+    `${events.length} crash${events.length !== 1 ? "es" : ""} detected (${platform})${sinceText}`,
+  ];
+  for (const event of events) {
+    lines.push(`  [${event.type.toUpperCase()}] ${event.line}`);
+  }
+  return lines.join("\n");
+}
+
 // ── Helpers ──
 
 function formatMetricValue(metric: string, value: number): string {

@@ -46,6 +46,25 @@ export interface LogOptions {
   since?: string;
 }
 
+/**
+ * One crash signal from `audb crash list`. audb classifies journal lines as
+ * `oom` | `segfault` | `abort` | `fatal` | `terminated` and returns the raw
+ * (short-iso) journal line that matched.
+ */
+export interface AuroraCrashEvent {
+  type: string;
+  line: string;
+}
+
+export interface CrashListOptions {
+  /** Restrict to one package (audb validates the id). */
+  package?: string;
+  /** `journalctl --since` expression, e.g. "today", "1 hour ago", "@1700000000". */
+  since?: string;
+  /** Journal lines scanned (audb default 2000, clamped 1..20000). */
+  lines?: number;
+}
+
 export interface AuroraTrackPoint {
   latitude: number;
   longitude: number;
@@ -118,7 +137,7 @@ export class AuroraClient {
       const output = execFileSync("audb", args, {
         encoding: "utf-8",
         maxBuffer: 50 * 1024 * 1024,
-        timeout: EXEC_TIMEOUT_MS,
+        timeout: timeoutMs,
       });
       return output.trim();
     } catch (error: unknown) {
@@ -128,8 +147,14 @@ export class AuroraClient {
       if (code === "ENOENT") {
         throw new Error("audb not found. Install: cargo install audb-client");
       }
+      // Keep the tail of audb's stderr: callers match on RuntimeManager's
+      // ApplicationAlreadyRunning and on GDBus failures.
+      const stderr = typeof error === "object" && error !== null
+        ? String(Reflect.get(error, "stderr") ?? "")
+        : "";
+      const tail = stderr.trim().split(/\r?\n/).slice(-2).join(" ").slice(0, 300);
       throw new MobileError(
-        `audb ${args[0] ?? "unknown"} command failed.`,
+        `audb ${args[0] ?? "unknown"} command failed${tail ? `: ${tail}` : "."}`,
         "AUDB_COMMAND_FAILED",
       );
   }
@@ -281,6 +306,8 @@ export class AuroraClient {
   selectDevice(deviceId: string): void {
     validateDeviceId(deviceId);
     this.runAudbSync(["select", deviceId]);
+    // A different device may have a different screenshot resolution.
+    this.geometryCache = undefined;
   }
 
   // ============ UI-tree support ============
@@ -741,6 +768,41 @@ export class AuroraClient {
    */
   clearLogs(): string {
     return this.runAudbSync(["logs", "--clear", "--force"]);
+  }
+
+  /**
+   * List crash signals from the device journal (`audb crash list --json`).
+   *
+   * audb itself derives the default `--since` window (last 24h, or the last
+   * `audb crash clear` marker), so `since` is only forwarded when provided.
+   *
+   * @param options - Package / since / lines filters
+   * @returns Crash events with audb's classification and the raw journal line
+   */
+  crashList(options: CrashListOptions = {}): AuroraCrashEvent[] {
+    const args: string[] = ["crash", "list"];
+    if (options.package) {
+      validatePackageName(options.package);
+      args.push(options.package);
+    }
+    if (options.since) args.push("--since", options.since);
+    if (options.lines) args.push("--lines", String(Math.trunc(options.lines)));
+    args.push("--json");
+
+    const data = parseAudbData(this.runAudbSync(args));
+    const rawEvents =
+      data !== null && typeof data === "object"
+        ? (data as { events?: unknown }).events
+        : undefined;
+    if (!Array.isArray(rawEvents)) return [];
+
+    return rawEvents.flatMap((entry): AuroraCrashEvent[] => {
+      if (entry === null || typeof entry !== "object") return [];
+      const type = (entry as { type?: unknown }).type;
+      const line = (entry as { line?: unknown }).line;
+      if (typeof line !== "string" || line.length === 0) return [];
+      return [{ type: typeof type === "string" && type.length > 0 ? type : "unknown", line }];
+    });
   }
 
   /**

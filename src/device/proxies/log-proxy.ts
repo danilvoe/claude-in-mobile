@@ -27,6 +27,8 @@ export class LogProxy {
       tag?: string;
       lines?: number;
       package?: string;
+      since?: string;
+      grep?: string;
       deviceId?: string;
     } = {},
   ): string {
@@ -39,6 +41,8 @@ export class LogProxy {
       tag: options.tag,
       lines: options.lines,
       package: options.package,
+      since: options.since,
+      grep: options.grep,
     }, options.deviceId);
   }
 

@@ -143,21 +143,37 @@ export const systemTools: ToolDefinition[] = [
 
   defineTool({
     name: "system_logs",
-    description: "Get device logs with optional filters",
+    description:
+      "Get device logs with optional filters. Aurora reads journald via `audb logs`: " +
+      "`level` maps to journald priority, and `since`/`grep` are passed straight through.",
     schema: z.object({
       ...commonFields,
       level: z
         .string()
         .optional()
         .describe(
-          "Log level filter. Android: V/D/I/W/E/F. iOS: debug/info/default/error/fault. HarmonyOS: HiLog level text.",
+          "Log level filter. Android: V/D/I/W/E/F. iOS: debug/info/default/error/fault. HarmonyOS: HiLog level text. Aurora: journald priority (emerg/alert/crit/err/warning/notice/info/debug or 0-7).",
         ),
       tag: z.string().optional().describe("Filter by tag (Android/HarmonyOS)"),
       lines: z
         .number()
         .default(100)
         .describe("Number of lines to return (default: 100)"),
-      package: z.string().optional().describe("Filter by package/bundle ID"),
+      package: z.string().optional().describe("Filter by package/bundle ID (Android/iOS)"),
+      since: z
+        .string()
+        .optional()
+        .describe(
+          "Lower time bound (Aurora only, `journalctl --since`) — e.g. 'today', 'yesterday', " +
+            "'1 hour ago', '@<unix-seconds>', or '2026-11-24 09:00:00'. Defaults to journald's own window.",
+        ),
+      grep: z
+        .string()
+        .optional()
+        .describe(
+          "Filter log lines by pattern (Aurora only, `journalctl --grep`). Applied by the device " +
+            "logger after the `lines` window is selected.",
+        ),
     }),
     handler: async (args, ctx) => {
       const { deviceId, platform } = parseCommonArgs(args as Record<string, unknown>, ctx);
@@ -168,6 +184,8 @@ export const systemTools: ToolDefinition[] = [
         tag: args.tag,
         lines: Math.min(args.lines, 500),
         package: args.package,
+        since: args.since,
+        grep: args.grep,
       });
       return textResult(truncateOutput(logs || "(no logs)", { maxLines: 500 }));
     },

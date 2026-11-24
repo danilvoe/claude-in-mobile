@@ -149,16 +149,17 @@ actions require a UI tree backend (see [UI Tree Backends](#ui-tree-backends)).
 | **input** | `tap` (coords or `text`), `double_tap`, `long_press`, `swipe`, `text`, `key` | Touch gestures, text input, keyboard |
 | **ui** | `tree`, `find`, `find_tap`, `tap_text`, `wait`, `assert_visible`, `assert_gone` | Element search, assertions, waits (requires a UI tree backend) |
 | **app** | `launch`, `stop`, `install`, `list` | App lifecycle; `launch` also raises an already-running app to the foreground |
-| **system** | `shell`, `logs`, `info` | Low-level control, device info |
+| **system** | `shell`, `logs`, `info` | Low-level control, device info; `logs` supports `lines`, `priority`, `since`, `grep` |
 | **sensor** | `location`, `track` | GPS position and track emulation (emulator only, `audb >= 0.4.2`) |
-| **screen** | `capture`, `annotate` | Screenshots (`annotate` requires a UI tree backend) |
+| **screen** | `capture`, `annotate` | Screenshots; `capture` accepts `saveTo` to write a file instead of returning base64 (`annotate` requires a UI tree backend) |
+| **performance** | `crashes` | `audb crash list` for Aurora; `snapshot`/`monitor` are not implemented |
 | **device** | `list`, `set_target`, `enable_module` | Device management; `enable_module` only loads tool schemas |
 | **flow** | `batch`, `run`, `parallel` | Multi-step automation |
 
-Not available on Aurora: `performance`, `visual`, `accessibility`. The Aurora adapter does
-not implement those capabilities, and `device(action: 'enable_module')` only loads the tool
-schemas — it does not add platform support. `ui(action: 'analyze')` works when a UI tree
-backend is available.
+Not available on Aurora: `visual`, `accessibility`, and the `performance` `snapshot`/`monitor`
+actions. The Aurora adapter does not implement those capabilities, and
+`device(action: 'enable_module')` only loads the tool schemas — it does not add platform
+support. `ui(action: 'analyze')` works when a UI tree backend is available.
 
 ### Example invocations (action syntax)
 
@@ -226,8 +227,13 @@ unchanged: `ui(tree|find|find_tap|tap_text|wait|assert_*)`,
 | **qtium** | Other (Qt/QML) apps | Talks to the qtium-driver bridge on device port 8888 over an SSH tunnel; expects newline-delimited JSON and tries `app:dumpCurrentPage`, then `app:dumpTree` | Developer mode "Allow UI autotesting" (`qtium-bridge.service`), the qtium `LD_PRELOAD` hook loaded into the app, third-party sandboxed QML app |
 
 The backend is chosen per running process: `libflutter_engine` in
-`/proc/<pid>/maps` selects Flutter, otherwise Qt/QML is assumed. Tree output is
-cached briefly and invalidated by taps, swipes, text input, and key presses.
+`/proc/<pid>/maps` selects Flutter. Those maps are root-only, so on a device
+without root the decision falls back to the VM Service announcement in the
+journal (`Dart VM service is listening on …`), which needs no root. If neither
+signal points at Flutter, Qt/QML is assumed. Tree output is cached briefly and
+invalidated by taps, swipes, text input, and key presses — the Flutter VM
+Service session is kept open across input actions, so a rotated journal does not
+break subsequent reads.
 
 Flutter needs no app changes: the tree comes from the engine's semantics
 service. Flutter release AOT builds expose no VM Service and are
@@ -271,7 +277,9 @@ Behavior:
 7. Returns `ok`, `backend`, `bridgeActive`, `appHooked`, `appRestarted`,
    `needsAppRestart`, `message`, and on failure a `code`.
 
-`aurora_ui_setup` requires root on the device (`audb shell --root`). Failures
+`aurora_ui_setup` needs root (`audb shell --root`) only for the Qt/QML path:
+enabling developer-mode autotesting, refreshing `sailjaild`, and inspecting
+`/proc/<pid>/maps`. Flutter detection and reading work without root. Failures
 surface as `AURORA_UI_SETUP_FAILED`, `BRIDGE_INACTIVE`, `APP_NOT_RUNNING`, or
 `INVALID_ARGUMENT`.
 
@@ -292,8 +300,9 @@ surface as `AURORA_UI_SETUP_FAILED`, `BRIDGE_INACTIVE`, `APP_NOT_RUNNING`, or
 - Both backends produce **device-space** bounds, the same space `audb` input
   uses. Flutter semantics rects are logical pixels and are scaled by the ratio
   of the `audb` screen geometry to the logical view. Qtium coordinates are
-  usually screen pixels already; if a dump reports a larger logical space, it is
-  scaled down to the screen.
+  usually screen pixels already; the QML root window extent decides the factor
+  (in either direction), so a 2× logical dump and a device-pixel dump both land
+  in the same space.
 - Coordinates shown by `ui(action: 'tree')`/`ui(action: 'find')` are device
   coordinates, matching the pixel space of `audb screenshot` (360×800 on the
   reference emulator). Element-based taps derive their target from those bounds
