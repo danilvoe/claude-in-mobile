@@ -291,19 +291,20 @@ surface as `AURORA_UI_SETUP_FAILED`, `BRIDGE_INACTIVE`, `APP_NOT_RUNNING`, or
   usually screen pixels already; if a dump reports a larger logical space, it is
   scaled down to the screen.
 - Coordinates shown by `ui(action: 'tree')`/`ui(action: 'find')` are device
-  coordinates. Element-based taps derive their target from those bounds
+  coordinates, matching the pixel space of `audb screenshot` (360×800 on the
+  reference emulator). Element-based taps derive their target from those bounds
   directly.
-- Raw `input(action: 'tap', x, y)` values are interpreted in the **last captured
-  screenshot's pixel space** and auto-scaled to device coordinates. With no
-  prior capture the scale is 1×. Do not feed tree coordinates back as raw `x`/`y`
-  after a compressed capture; prefer `text`, `index`, or `resourceId` selectors.
+- Raw `input(action: 'tap', x, y)` values use the same space, so tree
+  coordinates can be passed back unchanged. Prefer `text`, `index`, or
+  `resourceId` selectors: they survive layout and scale changes.
 
 ### Limitations
 
-- **Qt/QML dumps are best effort.** Some apps return an empty/invalid tree or
-  hang the dump. The backend falls back from `app:dumpCurrentPage` to
-  `app:dumpTree`, then reports `QTIUM_TIMEOUT`, `QTIUM_DUMP_UNAVAILABLE`, or
-  `QTIUM_EMPTY_TREE`. A spike is still required to make this reliable.
+- **Qt/QML coverage is third-party sandboxed apps only.** The backend reads
+  `app:dumpCurrentPage` (JSON) and falls back to `app:dumpTree` (base64 + zlib).
+  If the bridge does not know the app (`unknown_app`), the hook was not loaded
+  at launch: call `aurora_ui_setup` with `restartApp: true`. System apps and
+  Flutter apps are not covered by qtium.
 - **Flutter release builds are unsupported.** Only debug/profile builds expose
   the VM Service; release AOT builds fail with `VM_SERVICE_NOT_DISCOVERED`.
 - **Setup is runtime-only.** The tree exists while the app is running with the
@@ -432,7 +433,7 @@ input(action: 'key', key: 'BACK')
 ui(action: 'wait', text: 'Settings', timeout: 2000)
 ```
 
-### Workflow 5: Prepare a Qt/QML app for UI inspection (best effort)
+### Workflow 5: Prepare a Qt/QML app for UI inspection
 
 ```
 // 1. Launch a third-party sandboxed QML app
@@ -446,13 +447,9 @@ aurora_ui_setup(packageName: 'ru.example.qmlapp')
 aurora_ui_setup(packageName: 'ru.example.qmlapp', restartApp: true)
 → { ok: true, backend: 'qtium', bridgeActive: true, appHooked: true, appRestarted: true }
 
-// 4. Inspect and interact
+// 4. Inspect and interact (setup also selects the app for later ui calls)
 ui(action: 'tree', format: 'semantic')
 input(action: 'tap', text: 'Continue')
-
-// 5. Fall back to screenshots + coordinates if the dump fails or hangs
-screen(action: 'capture')
-input(action: 'tap', x: 320, y: 780)
 ```
 
 ---
@@ -467,7 +464,7 @@ input(action: 'tap', x: 320, y: 780)
 | "UI_TREE_SETUP_REQUIRED" | qtium bridge inactive or hook not loaded | Call `aurora_ui_setup`; repeat with `restartApp: true` if it returns `APP_RESTART_REQUIRED` |
 | "VM_SERVICE_NOT_DISCOVERED" | Flutter release build, app not running, or log line rotated away | Use a debug/profile build; keep the app running and relaunch to refresh the journal |
 | "APP_NOT_RUNNING" / "AMBIGUOUS_APP" | Target app cannot be resolved | Launch the app, pass `packageName`, or set `AURORA_UI_APP` |
-| "QTIUM_TIMEOUT" / "QTIUM_DUMP_UNAVAILABLE" | The app's QML dump hangs or is unsupported | Retry once; otherwise fall back to `screen(action: 'capture')` and coordinate taps |
+| "QTIUM_TIMEOUT" / "QTIUM_DUMP_UNAVAILABLE" | The bridge stopped responding or the hook is missing | Re-run `aurora_ui_setup`; if it reports `APP_RESTART_REQUIRED`, retry with `restartApp: true` |
 | "AURORA_UI_SETUP_FAILED" / "BRIDGE_INACTIVE" | No root access or developer mode cannot be enabled | Verify `audb shell --root` works and developer mode is available on the device |
 | "App not found" | Package name incorrect or app not installed | Verify package name; install app first with `app(action: 'install', ...)` |
 | "Shell command fails" | Command not available or permission denied | Check command syntax; some commands may require elevated permissions |

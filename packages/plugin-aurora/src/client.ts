@@ -104,6 +104,7 @@ function parseAudbData(output: string): unknown {
 
 export class AuroraClient {
   private readonly stateCache = new Map<string, DeviceStateCacheEntry>();
+  private geometryCache?: { value: ScreenshotGeometry; at: number };
 
   /**
    * SECURITY: All audb invocations route through this argv-form path (execFileSync — no /bin/sh -c).
@@ -366,6 +367,21 @@ export class AuroraClient {
 
   /** Screen geometry in the coordinate space used by audb tap/swipe. */
   getScreenshotGeometry(): ScreenshotGeometry {
+    const cached = this.geometryCache;
+    if (cached && Date.now() - cached.at < STATE_CACHE_TTL_MS) {
+      return cached.value;
+    }
+    const geometry = this.queryScreenshotGeometry();
+    this.geometryCache = { value: geometry, at: Date.now() };
+    return geometry;
+  }
+
+  /** Drop the cached screen geometry (e.g. after a rotation). */
+  invalidateScreenshotGeometry(): void {
+    this.geometryCache = undefined;
+  }
+
+  private queryScreenshotGeometry(): ScreenshotGeometry {
     try {
       const data = parseAudbData(this.runAudbSync(["--json", "capabilities"]));
       if (data !== null && typeof data === "object") {

@@ -19,7 +19,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     coordinates. Release AOT builds have no VM Service and are unsupported.
   - Qt/QML apps are read through the qtium-driver bridge on port 8888
     (developer-mode "Allow UI autotesting", third-party sandboxed apps only).
-    Best effort: dumps on some apps currently fail or hang.
+    Windows are scaled from logical QML pixels to device pixels using the root
+    window extent; list delegates outside the viewport are dropped; nodes with
+    `acceptedButtons` are the click targets.
   `ui(tree|find|find_tap|tap_text|wait|assert_*)`, `input_tap(text:...)`,
   post-action hints, and `screen_annotate` now use the tree on Aurora when a
   backend is available.
@@ -29,6 +31,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is idempotent.
 
 ### Fixed
+- Qt/QML UI trees now work: the qtium `execute` payload must be
+  `[command, args]` (a nested `[[command, args]]` list was silently dropped,
+  which produced 8 s timeouts), the bridge reply is parsed even without a
+  trailing newline, and screen geometry is cached so a fresh dump takes ~150 ms
+  instead of ~800 ms.
+- `aurora_ui_setup({ restartApp: true })` waits for the app to stop before
+  relaunching; RuntimeManager stops asynchronously, so the immediate launch
+  failed with `ApplicationAlreadyRunning`.
 - `parseUiHierarchy` now decodes XML entities (`&quot;`, `&apos;`, `&lt;`,
   `&gt;`, `&amp;`) in attributes, so labels containing quotes or angle brackets
   match correctly.

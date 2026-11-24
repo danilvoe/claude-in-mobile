@@ -26,6 +26,7 @@ import {
 
 const QTIUM_PORT = 8888;
 const COMMAND_TIMEOUT_MS = 8_000;
+const PID_CACHE_TTL_MS = 2_000;
 
 interface QtiumNode {
   classname?: unknown;
@@ -38,6 +39,8 @@ interface QtiumNode {
   enabled?: unknown;
   visible?: unknown;
   children?: unknown;
+  acceptedButtons?: unknown;
+  contentY?: unknown;
 }
 
 interface QtiumResponse {
@@ -58,6 +61,7 @@ export class QtiumUiTreeBackend {
   private readonly client: AuroraClient;
   private readonly timeoutMs: number;
   private tunnel?: CachedTunnel;
+  private readonly pidCache = new Map<number, { pid: number | undefined; at: number }>();
 
   constructor(client: AuroraClient, options: QtiumUiTreeOptions = {}) {
     this.client = client;
@@ -102,7 +106,16 @@ export class QtiumUiTreeBackend {
 
   /** Resolve the real QML app process behind the sailjail wrapper. */
   resolveAppPid(pid: number): number | undefined {
-    return findProcessWithLibrary(this.client, pid, "libqtium-engine");
+    const cached = this.pidCache.get(pid);
+    if (cached && Date.now() - cached.at < PID_CACHE_TTL_MS) return cached.pid;
+    const resolved = findProcessWithLibrary(this.client, pid, "libqtium-engine");
+    this.pidCache.set(pid, { pid: resolved, at: Date.now() });
+    return resolved;
+  }
+
+  /** Drop cached process lookups (e.g. after the app was restarted). */
+  invalidatePidCache(): void {
+    this.pidCache.clear();
   }
 
   async getSnapshot(packageName: string, pid: number): Promise<UiTreeSnapshot> {
@@ -124,12 +137,14 @@ export class QtiumUiTreeBackend {
       const tree = parseTreePayload(current.value);
       return this.toSnapshot(tree, packageName);
     } catch (currentError) {
+      if (currentError instanceof UiTreeSetupRequiredError) throw currentError;
       // Newer/older hooks differ in which dump command is implemented.
       try {
         const tree = await this.dump("app:dumpTree", packageName);
         const json = parseCompressedPayload(tree.value);
         return this.toSnapshot(json, packageName);
-      } catch {
+      } catch (fallbackError) {
+        if (fallbackError instanceof UiTreeSetupRequiredError) throw fallbackError;
         const message = currentError instanceof Error ? currentError.message : String(currentError);
         throw new UiTreeUnavailableError(
           `Qtium UI dump failed: ${message}`,
@@ -143,6 +158,7 @@ export class QtiumUiTreeBackend {
   close(): void {
     this.tunnel?.tunnel.close();
     this.tunnel = undefined;
+    this.pidCache.clear();
   }
 
   private toSnapshot(tree: unknown, packageName: string): UiTreeSnapshot {
@@ -167,9 +183,23 @@ export class QtiumUiTreeBackend {
     const device = this.client.getDeviceRecord();
     const tunnel = await this.ensureTunnel(device.host);
     const response = await sendCommand(tunnel.localPort, command, packageName, this.timeoutMs);
-    if (response.status !== 0 || typeof response.value !== "string" || response.value.length === 0) {
+    if (response.status !== 0) {
+      const value = typeof response.value === "string" ? response.value : "";
+      if (value === "unknown_app") {
+        throw new UiTreeSetupRequiredError(
+          `${packageName} is not connected to the qtium bridge. Restart it with aurora_ui_setup({ restartApp: true }).`,
+          { packageName, status: response.status },
+        );
+      }
       throw new UiTreeUnavailableError(
-        `Qtium command ${command} returned status ${String(response.status)} with no payload.`,
+        `Qtium command ${command} failed with status ${String(response.status)}${value ? `: ${value.slice(0, 120)}` : ""}.`,
+        "QTIUM_DUMP_FAILED",
+        { packageName, status: response.status },
+      );
+    }
+    if (typeof response.value !== "string" || response.value.length === 0) {
+      throw new UiTreeUnavailableError(
+        `Qtium command ${command} returned no payload.`,
         "QTIUM_DUMP_EMPTY",
       );
     }
@@ -226,42 +256,58 @@ function sendCommand(
       "QTIUM_CONNECT_FAILED",
     )));
 
+    // The bridge processes commands in order, so both lines can be written at
+    // once; `initialize` itself has no reply.
     socket.on("connect", () => {
-      const initialize = JSON.stringify({
-        cmd: "action",
-        action: "initialize",
-        params: [packageName],
-      });
-      socket.write(`${initialize}\n`);
-      setTimeout(() => {
-        socket.write(`${JSON.stringify({
-          cmd: "action",
-          action: "execute",
-          params: [[command, []]],
-        })}\n`);
-      }, 250);
+      socket.write(buildCommandPayload(packageName, command));
     });
 
     socket.on("data", (chunk: Buffer) => {
       buffer += chunk.toString("utf8");
+      // The bridge does not always terminate the last reply with a newline, so
+      // try the whole buffer first and only then fall back to line splitting.
+      const whole = buffer.trim();
+      if (whole.startsWith("{")) {
+        const parsed = tryParseResponse(whole);
+        if (parsed) {
+          finish(undefined, parsed);
+          return;
+        }
+      }
       const lines = buffer.split("\n");
       buffer = lines.pop() ?? "";
       for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed) continue;
-        let parsed: QtiumResponse;
-        try {
-          parsed = JSON.parse(trimmed) as QtiumResponse;
-        } catch {
-          continue;
-        }
-        if (typeof parsed.status === "number") {
+        const parsed = tryParseResponse(line.trim());
+        if (parsed) {
           finish(undefined, parsed);
           return;
         }
       }
     });
   });
+}
+
+function tryParseResponse(text: string): QtiumResponse | undefined {
+  if (!text) return undefined;
+  try {
+    const parsed = JSON.parse(text) as QtiumResponse;
+    return typeof parsed.status === "number" ? parsed : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Wire format of the bridge: newline-delimited JSON. `execute` must carry
+ * `[command, args]` (the bridge looks up `executeCommand(ITransportClient*,
+ * QString, QVariant)`), not a nested list.
+ */
+export function buildCommandPayload(packageName: string, command: string, args: unknown[] = []): string {
+  return [
+    JSON.stringify({ cmd: "action", action: "initialize", params: [packageName] }),
+    JSON.stringify({ cmd: "action", action: "execute", params: [command, args] }),
+    "",
+  ].join("\n");
 }
 
 // Exported for tests.
@@ -292,13 +338,18 @@ export function parseCompressedPayload(value: string | undefined): unknown {
 
 // Exported for tests.
 export function flattenQtiumTree(tree: unknown, packageName: string, screen: ScreenGeometry): UiTreeNode[] {
-  const nodes: UiTreeNode[] = [];
-  const maxX = { value: 0 };
-  const maxY = { value: 0 };
+  const root = tree !== null && typeof tree === "object" ? (tree as QtiumNode) : {};
+  const scale = computeScale(root, tree, screen);
 
-  const walk = (value: unknown): void => {
+  const nodes: UiTreeNode[] = [];
+
+  const walk = (value: unknown, inheritedVisible: boolean): void => {
     if (value === null || typeof value !== "object") return;
     const raw = value as QtiumNode;
+    const visible = inheritedVisible && raw.visible !== false;
+    // Skip the whole subtree: a hidden container renders nothing.
+    if (!visible) return;
+
     const x = toNumber(raw.abs_x);
     const y = toNumber(raw.abs_y);
     const width = toNumber(raw.width);
@@ -306,72 +357,112 @@ export function flattenQtiumTree(tree: unknown, packageName: string, screen: Scr
     const className = typeof raw.classname === "string" ? raw.classname : "QmlItem";
     const text = typeof raw.mainTextProperty === "string" ? raw.mainTextProperty : "";
     const objectName = typeof raw.objectName === "string" ? raw.objectName : "";
-    const visible = raw.visible !== false;
 
-    if (visible && x !== undefined && y !== undefined && width !== undefined && height !== undefined) {
-      maxX.value = Math.max(maxX.value, x + width);
-      maxY.value = Math.max(maxY.value, y + height);
-    }
-
-    if (visible && x !== undefined && y !== undefined && width !== undefined && height !== undefined
+    if (x !== undefined && y !== undefined && width !== undefined && height !== undefined
       && width > 0 && height > 0) {
-      nodes.push({
-        kind: "qtium",
-        id: objectName || `${className}@${x},${y}`,
-        className,
-        text,
-        contentDesc: "",
-        resourceId: objectName,
-        packageName,
-        bounds: { x1: x, y1: y, x2: x + width, y2: y + height },
-        clickable: isClickableClass(className) || text.length > 0,
-        longClickable: false,
-        scrollable: isScrollableClass(className),
-        enabled: raw.enabled !== false,
-        focusable: isTextInputClass(className),
-        focused: false,
-        selected: false,
-        checkable: false,
-        checked: false,
-        password: false,
-      });
+      const bounds = {
+        x1: Math.round(x * scale.x),
+        y1: Math.round(y * scale.y),
+        x2: Math.round((x + width) * scale.x),
+        y2: Math.round((y + height) * scale.y),
+      };
+      // QML list delegates exist outside the viewport. Drop them instead of
+      // clamping, otherwise they all pile up on the screen edge.
+      if (!isOffscreen(bounds, screen)) {
+        nodes.push({
+          kind: "qtium",
+          id: objectName || `${className}@${x},${y}`,
+          className,
+          text,
+          contentDesc: "",
+          resourceId: objectName,
+          packageName,
+          bounds: {
+            x1: clamp(bounds.x1, 0, screen.width),
+            y1: clamp(bounds.y1, 0, screen.height),
+            x2: clamp(bounds.x2, 0, screen.width),
+            y2: clamp(bounds.y2, 0, screen.height),
+          },
+          clickable: isClickable(raw, className),
+          longClickable: false,
+          scrollable: isScrollable(raw, className),
+          enabled: raw.enabled !== false,
+          focusable: isTextInputClass(className),
+          focused: false,
+          selected: false,
+          checkable: false,
+          checked: false,
+          password: false,
+        });
+      }
     }
 
+    if (Array.isArray(raw.children)) {
+      for (const child of raw.children) walk(child, visible);
+    }
+  };
+
+  walk(tree, true);
+  return nodes;
+}
+
+/**
+ * QML dumps are usually in logical pixels (720x1600 for a 2x screen) while
+ * audb input works in screenshot pixels. Scale by the root window extent, not
+ * by the children: list views keep delegates far outside the viewport.
+ */
+function computeScale(
+  root: QtiumNode,
+  tree: unknown,
+  screen: ScreenGeometry,
+): { x: number; y: number } {
+  const rootX = toNumber(root.abs_x) ?? 0;
+  const rootY = toNumber(root.abs_y) ?? 0;
+  const rootWidth = toNumber(root.width);
+  const rootHeight = toNumber(root.height);
+
+  if (rootWidth !== undefined && rootHeight !== undefined && rootWidth > 0 && rootHeight > 0) {
+    const logicalWidth = rootX + rootWidth;
+    const logicalHeight = rootY + rootHeight;
+    return {
+      x: logicalWidth > screen.width * 1.05 ? screen.width / logicalWidth : 1,
+      y: logicalHeight > screen.height * 1.05 ? screen.height / logicalHeight : 1,
+    };
+  }
+
+  // Fallback for payloads without a sized root: use the visible extent.
+  let maxX = 0;
+  let maxY = 0;
+  const walk = (value: unknown): void => {
+    if (value === null || typeof value !== "object") return;
+    const raw = value as QtiumNode;
+    if (raw.visible !== false) {
+      const x = toNumber(raw.abs_x);
+      const y = toNumber(raw.abs_y);
+      const width = toNumber(raw.width);
+      const height = toNumber(raw.height);
+      if (x !== undefined && y !== undefined && width !== undefined && height !== undefined) {
+        maxX = Math.max(maxX, x + width);
+        maxY = Math.max(maxY, y + height);
+      }
+    }
     if (Array.isArray(raw.children)) {
       for (const child of raw.children) walk(child);
     }
   };
-
   walk(tree);
+  return {
+    x: maxX > screen.width * 1.1 ? screen.width / maxX : 1,
+    y: maxY > screen.height * 1.1 ? screen.height / maxY : 1,
+  };
+}
 
-  // QML dumps are normally already in screen pixels. If a build reports a
-  // larger logical space, scale it to the device coordinate space so taps line
-  // up with audb input.
-  const scaleX = maxX.value > screen.width * 1.1 ? screen.width / maxX.value : 1;
-  const scaleY = maxY.value > screen.height * 1.1 ? screen.height / maxY.value : 1;
-  if (scaleX !== 1 || scaleY !== 1) {
-    for (const node of nodes) {
-      node.bounds = {
-        x1: Math.round(node.bounds.x1 * scaleX),
-        y1: Math.round(node.bounds.y1 * scaleY),
-        x2: Math.round(node.bounds.x2 * scaleX),
-        y2: Math.round(node.bounds.y2 * scaleY),
-      };
-    }
-  }
-
-  // QML children can extend past the window. Clamp so the XML bounds regex
-  // (which only accepts unsigned integers) does not silently drop them.
-  for (const node of nodes) {
-    node.bounds = {
-      x1: clamp(node.bounds.x1, 0, screen.width),
-      y1: clamp(node.bounds.y1, 0, screen.height),
-      x2: clamp(node.bounds.x2, 0, screen.width),
-      y2: clamp(node.bounds.y2, 0, screen.height),
-    };
-  }
-
-  return nodes;
+function isOffscreen(
+  bounds: { x1: number; y1: number; x2: number; y2: number },
+  screen: ScreenGeometry,
+): boolean {
+  return bounds.x1 >= screen.width || bounds.y1 >= screen.height
+    || bounds.x2 <= 0 || bounds.y2 <= 0;
 }
 
 function clamp(value: number, min: number, max: number): number {
@@ -383,12 +474,26 @@ function toNumber(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function isClickableClass(className: string): boolean {
-  return /Button|MouseArea|ListItem|MenuItem|Switch|Slider|ComboBox|TextField|TextArea|IconButton/i.test(className);
+const INTERACTIVE_CLASS =
+  /Button|MouseArea|ListItem|MenuItem|Switch|Slider|ComboBox|TextField|TextArea|IconButton/i;
+const SCROLLABLE_CLASS = /Flickable|ListView|GridView|ScrollView|PageView/i;
+/** Full-screen containers also accept touches but are not tappable targets. */
+const CONTAINER_CLASS = /^(?:MainPage|Page|PageHeader|ApplicationWindow|SilicaFlickable|AppBar|BackgroundRectangle)$/;
+
+/**
+ * `acceptedButtons` is exported by MouseArea-derived items and is the most
+ * reliable "this responds to touches" signal in the dump.
+ */
+function isClickable(raw: QtiumNode, className: string): boolean {
+  if (CONTAINER_CLASS.test(className)) return false;
+  const acceptedButtons = toNumber(raw.acceptedButtons);
+  if (acceptedButtons !== undefined && acceptedButtons > 0) return true;
+  return INTERACTIVE_CLASS.test(className);
 }
 
-function isScrollableClass(className: string): boolean {
-  return /Flickable|ListView|GridView|ScrollView|PageView/i.test(className);
+function isScrollable(raw: QtiumNode, className: string): boolean {
+  if (toNumber(raw.contentY) !== undefined) return true;
+  return SCROLLABLE_CLASS.test(className);
 }
 
 function isTextInputClass(className: string): boolean {

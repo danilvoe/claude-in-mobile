@@ -171,7 +171,12 @@ export class AuroraUiTreeProvider {
           message: `App ${explicit} is not running. Launch it with app(action:'launch') or call aurora_ui_setup with restartApp=true.`,
         };
       }
-      this.client.launchApp(explicit);
+      try {
+        this.client.launchApp(explicit);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/already running/i.test(message)) throw error;
+      }
       this.setActivePackage(explicit);
       const app = await this.waitForApp(explicit, 15_000);
       if (!app) {
@@ -239,8 +244,10 @@ export class AuroraUiTreeProvider {
       } catch {
         /* setup will report the hook as missing */
       }
-      this.restartApp(app.package);
+      await this.restartApp(app.package);
       appRestarted = true;
+      this.qtium.invalidatePidCache();
+      this.pidResolution.clear();
       const restarted = await this.waitForApp(app.package, 15_000);
       if (restarted) {
         app.pid = restarted.pid;
@@ -368,7 +375,8 @@ export class AuroraUiTreeProvider {
     }
 
     throw new UiTreeUnavailableError(
-      `Multiple Aurora applications are running: ${running.map((app) => app.package).join(", ")}. Set AURORA_UI_APP or launch the target app to disambiguate.`,
+      `Multiple Aurora applications are running: ${running.map((app) => app.package).join(", ")}. `
+        + "Call aurora_ui_setup with packageName (or set AURORA_UI_APP) to choose one.",
       "AMBIGUOUS_APP",
       { candidates: running.map((app) => app.package) },
     );
@@ -401,14 +409,35 @@ export class AuroraUiTreeProvider {
     this.client.shellRoot("systemctl restart sailjaild");
   }
 
-  private restartApp(packageName: string): void {
+  private async restartApp(packageName: string): Promise<void> {
     try {
       this.client.stopApp(packageName);
     } catch {
       /* already stopped */
     }
-    this.client.launchApp(packageName);
+    // RuntimeManager stops asynchronously; launching too early fails with
+    // ApplicationAlreadyRunning.
+    await this.waitForStop(packageName, 10_000);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        this.client.launchApp(packageName);
+        break;
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!/already running/i.test(message) || attempt === 2) throw error;
+        await sleep(500);
+      }
+    }
     this.setActivePackage(packageName);
+  }
+
+  private async waitForStop(packageName: string, timeoutMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (!this.runningApps().some((entry) => entry.package === packageName)) return true;
+      await sleep(200);
+    }
+    return false;
   }
 
   private async waitForApp(packageName: string, timeoutMs: number): Promise<RunningApp | undefined> {

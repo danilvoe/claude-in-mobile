@@ -2,7 +2,7 @@ import zlib from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 
-import { flattenQtiumTree, parseCompressedPayload } from "./qtium.js";
+import { buildCommandPayload, flattenQtiumTree, parseCompressedPayload } from "./qtium.js";
 
 const SCREEN = { width: 360, height: 800 };
 const PACKAGE = "ru.example.qmlapp";
@@ -237,6 +237,75 @@ describe("flattenQtiumTree scaling", () => {
   });
 });
 
+describe("flattenQtiumTree window geometry (real app:dumpCurrentPage shape)", () => {
+  const page = (children: unknown[]) => ({
+    classname: "MainPage",
+    abs_x: 0,
+    abs_y: 68,
+    width: 720,
+    height: 1532,
+    objectName: "mainPage",
+    acceptedButtons: 1,
+    children,
+  });
+
+  it("scales by the root window instead of far-away list delegates", () => {
+    const tree = page([
+      {
+        classname: "LabelBase",
+        abs_x: 30,
+        abs_y: 573,
+        width: 660,
+        height: 90,
+        mainTextProperty: "Title",
+        objectName: "title",
+      },
+      {
+        // A preloaded delegate far below the viewport.
+        classname: "ListItem",
+        abs_x: 0,
+        abs_y: 3533,
+        width: 720,
+        height: 534,
+        acceptedButtons: 1,
+        objectName: "offscreenItem",
+      },
+    ]);
+
+    const nodes = flattenQtiumTree(tree, PACKAGE, SCREEN);
+
+    expect(nodes.map((node) => node.id)).toEqual(["mainPage", "title"]);
+    // 720 wide / 1600 logical tall (abs_y + height) -> exactly half.
+    expect(nodes[1].bounds).toEqual({ x1: 15, y1: 287, x2: 345, y2: 332 });
+  });
+
+  it("drops fully offscreen nodes instead of clamping them onto the edge", () => {
+    const tree = page([
+      { classname: "ListItem", abs_x: 0, abs_y: 4000, width: 720, height: 500, objectName: "far", acceptedButtons: 1 },
+    ]);
+
+    const nodes = flattenQtiumTree(tree, PACKAGE, SCREEN);
+    expect(nodes.map((node) => node.id)).toEqual(["mainPage"]);
+  });
+
+  it("treats acceptedButtons nodes as clickable and labels as plain text", () => {
+    const tree = page([
+      { classname: "ListItem", abs_x: 0, abs_y: 194, width: 720, height: 579, acceptedButtons: 1, objectName: "row" },
+      { classname: "LabelBase", abs_x: 30, abs_y: 573, width: 660, height: 90, mainTextProperty: "Title", objectName: "label" },
+      { classname: "Button", abs_x: 200, abs_y: 800, width: 300, height: 90, mainTextProperty: "Retry", objectName: "button" },
+    ]);
+
+    const nodes = flattenQtiumTree(tree, PACKAGE, SCREEN);
+    const byId = (id: string) => nodes.find((node) => node.id === id);
+
+    expect(byId("row")?.clickable).toBe(true);
+    expect(byId("label")?.clickable).toBe(false);
+    expect(byId("button")?.clickable).toBe(true);
+    // Full-screen containers accept touches but are not tap targets.
+    expect(byId("mainPage")?.clickable).toBe(false);
+  });
+});
+
 describe("parseCompressedPayload (app:dumpTree shape)", () => {
   it("decodes a base64 + zlib JSON payload", () => {
     const tree = {
@@ -261,5 +330,31 @@ describe("parseCompressedPayload (app:dumpTree shape)", () => {
   it("rejects an empty payload", () => {
     expect(() => parseCompressedPayload(undefined)).toThrow(/no tree payload/i);
     expect(() => parseCompressedPayload("")).toThrow();
+  });
+});
+
+describe("buildCommandPayload", () => {
+  it("sends initialize and a flat [command, args] execute payload", () => {
+    const lines = buildCommandPayload(PACKAGE, "app:dumpCurrentPage").trimEnd().split("\n");
+
+    expect(lines).toHaveLength(2);
+    expect(JSON.parse(lines[0])).toEqual({
+      cmd: "action",
+      action: "initialize",
+      params: [PACKAGE],
+    });
+    // The bridge dispatches executeCommand(ITransportClient*, QString, QVariant);
+    // a nested `[[command, args]]` payload is silently dropped.
+    expect(JSON.parse(lines[1])).toEqual({
+      cmd: "action",
+      action: "execute",
+      params: ["app:dumpCurrentPage", []],
+    });
+  });
+
+  it("passes command arguments through", () => {
+    const lines = buildCommandPayload(PACKAGE, "app:js", ["1 + 1"]).trimEnd().split("\n");
+
+    expect(JSON.parse(lines[1]).params).toEqual(["app:js", ["1 + 1"]]);
   });
 });
