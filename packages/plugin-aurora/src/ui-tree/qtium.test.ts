@@ -304,6 +304,17 @@ describe("flattenQtiumTree window geometry (real app:dumpCurrentPage shape)", ()
     // Full-screen containers accept touches but are not tap targets.
     expect(byId("mainPage")?.clickable).toBe(false);
   });
+
+  it("drops structural containers that carry no text, name or interaction", () => {
+    const tree = page([
+      { classname: "QQuickItem", abs_x: 0, abs_y: 68, width: 720, height: 400 },
+      { classname: "QQuickItem", abs_x: 0, abs_y: 68, width: 720, height: 400, objectName: "layout" },
+      { classname: "SilicaFlickable", abs_x: 0, abs_y: 68, width: 720, height: 400, contentY: 0 },
+    ]);
+
+    const ids = flattenQtiumTree(tree, PACKAGE, SCREEN).map((node) => node.id);
+    expect(ids).toEqual(["mainPage", "layout", "SilicaFlickable@0,68"]);
+  });
 });
 
 describe("parseCompressedPayload (app:dumpTree shape)", () => {

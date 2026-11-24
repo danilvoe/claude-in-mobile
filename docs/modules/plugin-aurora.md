@@ -307,6 +307,10 @@ surface as `AURORA_UI_SETUP_FAILED`, `BRIDGE_INACTIVE`, `APP_NOT_RUNNING`, or
   Flutter apps are not covered by qtium.
 - **Flutter release builds are unsupported.** Only debug/profile builds expose
   the VM Service; release AOT builds fail with `VM_SERVICE_NOT_DISCOVERED`.
+- **The Flutter VM Service URL is announced once, in the journal.** If the app
+  has been running long enough for that line to rotate away, discovery fails
+  with `VM_SERVICE_TOKEN_LOST` (the port is still reported). Relaunch the app to
+  re-announce it; this resets app state.
 - **Setup is runtime-only.** The tree exists while the app is running with the
   hook or VM Service active; restarting the app or leaving it in the background
   can invalidate it.
@@ -463,6 +467,7 @@ input(action: 'tap', text: 'Continue')
 | "Element not found" | Tree backend unavailable or text doesn't match | Confirm `ui(action: 'tree')` returns elements; call `aurora_ui_setup` for QML apps |
 | "UI_TREE_SETUP_REQUIRED" | qtium bridge inactive or hook not loaded | Call `aurora_ui_setup`; repeat with `restartApp: true` if it returns `APP_RESTART_REQUIRED` |
 | "VM_SERVICE_NOT_DISCOVERED" | Flutter release build, app not running, or log line rotated away | Use a debug/profile build; keep the app running and relaunch to refresh the journal |
+| "VM_SERVICE_TOKEN_LOST" | The app has a VM Service socket, but its auth token left the journal | Relaunch the app to re-announce the service (resets app state) |
 | "APP_NOT_RUNNING" / "AMBIGUOUS_APP" | Target app cannot be resolved | Launch the app, pass `packageName`, or set `AURORA_UI_APP` |
 | "QTIUM_TIMEOUT" / "QTIUM_DUMP_UNAVAILABLE" | The bridge stopped responding or the hook is missing | Re-run `aurora_ui_setup`; if it reports `APP_RESTART_REQUIRED`, retry with `restartApp: true` |
 | "AURORA_UI_SETUP_FAILED" / "BRIDGE_INACTIVE" | No root access or developer mode cannot be enabled | Verify `audb shell --root` works and developer mode is available on the device |

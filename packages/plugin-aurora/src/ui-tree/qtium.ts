@@ -360,6 +360,9 @@ export function flattenQtiumTree(tree: unknown, packageName: string, screen: Scr
 
     if (x !== undefined && y !== undefined && width !== undefined && height !== undefined
       && width > 0 && height > 0) {
+      const clickable = isClickable(raw, className);
+      const scrollable = isScrollable(raw, className);
+      const focusable = isTextInputClass(className);
       const bounds = {
         x1: Math.round(x * scale.x),
         y1: Math.round(y * scale.y),
@@ -368,7 +371,9 @@ export function flattenQtiumTree(tree: unknown, packageName: string, screen: Scr
       };
       // QML list delegates exist outside the viewport. Drop them instead of
       // clamping, otherwise they all pile up on the screen edge.
-      if (!isOffscreen(bounds, screen)) {
+      const meaningful = text.length > 0 || objectName.length > 0
+        || clickable || scrollable || focusable;
+      if (meaningful && !isOffscreen(bounds, screen)) {
         nodes.push({
           kind: "qtium",
           id: objectName || `${className}@${x},${y}`,
@@ -383,11 +388,11 @@ export function flattenQtiumTree(tree: unknown, packageName: string, screen: Scr
             x2: clamp(bounds.x2, 0, screen.width),
             y2: clamp(bounds.y2, 0, screen.height),
           },
-          clickable: isClickable(raw, className),
+          clickable,
           longClickable: false,
-          scrollable: isScrollable(raw, className),
+          scrollable,
           enabled: raw.enabled !== false,
-          focusable: isTextInputClass(className),
+          focusable,
           focused: false,
           selected: false,
           checkable: false,

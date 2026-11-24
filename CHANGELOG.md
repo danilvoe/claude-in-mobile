@@ -35,7 +35,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `[command, args]` (a nested `[[command, args]]` list was silently dropped,
   which produced 8 s timeouts), the bridge reply is parsed even without a
   trailing newline, and screen geometry is cached so a fresh dump takes ~150 ms
-  instead of ~800 ms.
+  instead of ~800 ms. Structural QML containers are filtered out (83 → 27
+  elements on the reference app).
+- Flutter discovery distinguishes `VM_SERVICE_TOKEN_LOST` (service socket still
+  open, auth token rotated out of the journal) from
+  `VM_SERVICE_NOT_DISCOVERED`, so the agent knows a relaunch is required.
 - `aurora_ui_setup({ restartApp: true })` waits for the app to stop before
   relaunching; RuntimeManager stops asynchronously, so the immediate launch
   failed with `ApplicationAlreadyRunning`.

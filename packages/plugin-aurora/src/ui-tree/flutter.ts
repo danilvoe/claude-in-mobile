@@ -83,7 +83,7 @@ export class FlutterUiTreeBackend {
   }
 
   async getSnapshot(packageName: string, pid: number): Promise<UiTreeSnapshot> {
-    const resolvedPid = this.resolveAppPid(pid) ?? pid;
+    const resolvedPid = this.isFlutterProcess(pid) ? pid : (this.resolveAppPid(pid) ?? pid);
     try {
       const first = await this.tryGetSnapshot(packageName, resolvedPid);
       if (first) return first;
@@ -96,11 +96,41 @@ export class FlutterUiTreeBackend {
     const second = await this.tryGetSnapshot(packageName, resolvedPid);
     if (second) return second;
 
+    // Distinguish "journal rotated away" from "not a debug build": the VM
+    // Service port stays open even when its auth token is no longer logged.
+    const port = this.findVmServicePort(resolvedPid);
+    if (port !== undefined) {
+      throw new UiTreeUnavailableError(
+        `The Flutter VM Service for ${packageName} listens on 127.0.0.1:${port}, but its auth token is no longer in the journal. `
+          + "Relaunch the app to re-announce it (this resets app state).",
+        "VM_SERVICE_TOKEN_LOST",
+        { packageName, pid: resolvedPid, port },
+      );
+    }
+
     throw new UiTreeUnavailableError(
       `No Flutter VM Service was found for ${packageName}. Use a debug build, keep the app running, and try again.`,
       "VM_SERVICE_NOT_DISCOVERED",
       { packageName, pid: resolvedPid },
     );
+  }
+
+  /**
+   * Find the localhost port the Dart VM Service listens on. Used only for
+   * diagnostics when the auth token cannot be recovered from the journal.
+   */
+  findVmServicePort(pid: number): number | undefined {
+    if (!Number.isInteger(pid) || pid <= 0) return undefined;
+    try {
+      const output = this.client.shellRoot(`ss -tlnp 2>/dev/null | grep 'pid=${pid},'`);
+      for (const line of output.split(/\r?\n/)) {
+        const match = line.match(/127\.0\.0\.1:(\d+)/);
+        if (match) return Number(match[1]);
+      }
+    } catch {
+      /* ss is unavailable or lacks permissions */
+    }
+    return undefined;
   }
 
   invalidate(): void {
