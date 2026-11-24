@@ -5,7 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [4.5.0-fork.1] — 2026-11-24
+
+> Fork build: this repository keeps its own version line (`X.Y.Z-fork.N`) while
+> the changes are being prepared for the main branch. See [FORK.md](FORK.md).
 
 ### Added
 - Aurora emulator GPS emulation: `sensor(action:'location')` and

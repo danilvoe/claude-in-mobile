@@ -1,4 +1,8 @@
-# mcp-devices 4.2.0 (ex-`claude-in-mobile`)
+# mcp-devices (ex-`claude-in-mobile`)
+
+> **Fork build.** This repository keeps its own version line (`X.Y.Z-fork.N`)
+> while the changes are being prepared for the main branch. See
+> [FORK.md](FORK.md) for the scheme and the current line.
 
 > ## 👉 Want everything in one package? Keep using `claude-in-mobile`.
 >

@@ -22,7 +22,7 @@ import { buildAuroraUiTools } from "./ui-tree/tools.js";
 export const AURORA_PLUGIN_MANIFEST: PluginManifest = {
   id: "aurora",
   name: "Aurora OS",
-  version: "4.4.1",
+  version: "4.5.0-fork.1",
   apiVersion: "1",
   capabilities: ["screen", "input", "ui", "shell", "appLifecycle", "logs", "fileTransfer", "deviceMgmt", "location"],
   tools: ["flutter_doctor", "flutter_devices", "flutter_test", "flutter_permissions", "aurora_ui_setup"],
