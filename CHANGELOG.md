@@ -27,8 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   backend is available.
 - `aurora_ui_setup` tool: enables developer-mode UI autotesting via
   `SetAutoTestUIEnabled true`, restarts `sailjaild`, and restarts the target app
-  only when `restartApp: true` (restarting resets app state). Requires root and
-  is idempotent.
+  only when `restartApp: true` (restarting resets app state). It also raises the
+  target app to the foreground. Requires root and is idempotent.
+- `app(action:'launch')` on Aurora is idempotent: launching an already-running
+  app raises its window through lipstick (`WindowModel.launchProcess`) instead of
+  failing with `ApplicationAlreadyRunning`.
 
 ### Fixed
 - Qt/QML UI trees now work: the qtium `execute` payload must be

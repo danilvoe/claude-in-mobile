@@ -148,7 +148,7 @@ actions require a UI tree backend (see [UI Tree Backends](#ui-tree-backends)).
 |--------|-------------|-----|
 | **input** | `tap` (coords or `text`), `double_tap`, `long_press`, `swipe`, `text`, `key` | Touch gestures, text input, keyboard |
 | **ui** | `tree`, `find`, `find_tap`, `tap_text`, `wait`, `assert_visible`, `assert_gone` | Element search, assertions, waits (requires a UI tree backend) |
-| **app** | `launch`, `stop`, `install`, `list` | App lifecycle |
+| **app** | `launch`, `stop`, `install`, `list` | App lifecycle; `launch` also raises an already-running app to the foreground |
 | **system** | `shell`, `logs`, `info` | Low-level control, device info |
 | **sensor** | `location`, `track` | GPS position and track emulation (emulator only, `audb >= 0.4.2`) |
 | **screen** | `capture`, `annotate` | Screenshots (`annotate` requires a UI tree backend) |
@@ -250,21 +250,25 @@ Behavior:
 
 1. Resolves the target app. If several apps are running and no `packageName` is
    given, it fails with `AMBIGUOUS_APP`.
-2. **Flutter app:** returns `backend: "flutter"` immediately. No developer-mode
+2. **Raises the target app to the foreground** (unless it is being restarted):
+   taps and the tree must describe the same window, and a backgrounded app
+   receives neither. This also makes the app the active package for later
+   `ui`/`input` calls.
+3. **Flutter app:** returns `backend: "flutter"` immediately. No developer-mode
    changes, no restart — the VM Service is already there in debug/profile builds.
-3. **Qt/QML app:** if the bridge is inactive and `enableAutoTest` is not `false`,
+4. **Qt/QML app:** if the bridge is inactive and `enableAutoTest` is not `false`,
    runs `gdbus call --system --dest ru.omp.developermode --object-path /
    --method ru.omp.developermode.SetAutoTestUIEnabled true`, enabling developer
    mode first if that call fails, then runs `systemctl restart sailjaild` so the
    new permission set is visible without a reboot. It then waits up to 15 s for
    the bridge.
-4. If the bridge is still inactive, returns `ok: false`,
+5. If the bridge is still inactive, returns `ok: false`,
    `code: "BRIDGE_INACTIVE"`.
-5. Checks whether the qtium hook is loaded in the app process. If it is missing
+6. Checks whether the qtium hook is loaded in the app process. If it is missing
    and `restartApp` is `false`, returns `ok: false`, `code:
    "APP_RESTART_REQUIRED"`, `needsAppRestart: true`. With `restartApp: true` it
    stops and relaunches the app (up to 15 s to come back).
-6. Returns `ok`, `backend`, `bridgeActive`, `appHooked`, `appRestarted`,
+7. Returns `ok`, `backend`, `bridgeActive`, `appHooked`, `appRestarted`,
    `needsAppRestart`, `message`, and on failure a `code`.
 
 `aurora_ui_setup` requires root on the device (`audb shell --root`). Failures

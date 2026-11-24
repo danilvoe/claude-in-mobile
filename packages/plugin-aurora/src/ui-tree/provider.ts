@@ -207,6 +207,12 @@ export class AuroraUiTreeProvider {
   }
 
   private async setupForApp(app: RunningApp, options: UiTreeSetupOptions): Promise<UiTreeSetupResult> {
+    // The tree describes the app's window; a backgrounded app receives neither
+    // taps nor the same visible content. Raise it unless it is being restarted.
+    if (!options.restartApp) {
+      this.client.activateApp(app.package);
+    }
+
     const flutterPid = this.flutter.resolveAppPid(app.pid);
     const vmService = this.flutter.findVmService(app.package);
     if (flutterPid !== undefined || vmService !== undefined) {

@@ -3,7 +3,7 @@ import { rmSync, writeFileSync } from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { MobileError } from "mcp-devices/errors";
-import { validateDeviceId } from "mcp-devices/utils/sanitize";
+import { validateDeviceId, validatePackageName } from "mcp-devices/utils/sanitize";
 import {
   makePrivateTempDir,
   readPrivateFileSync,
@@ -292,7 +292,13 @@ export class AuroraClient {
 
   /** List running applications with PIDs (`audb --json app list-running`). */
   listRunningApps(): RunningApp[] {
-    const data = parseAudbData(this.runAudbSync(["--json", "app", "list-running"]));
+    let data: unknown;
+    try {
+      data = parseAudbData(this.runAudbSync(["--json", "app", "list-running"]));
+    } catch {
+      // Older audb builds or a transient failure: treat as "nothing known".
+      return [];
+    }
     if (!Array.isArray(data)) return [];
     const apps: RunningApp[] = [];
     for (const entry of data) {
@@ -623,8 +629,33 @@ export class AuroraClient {
    * @returns Output message from audb
    */
   launchApp(packageName: string): string {
+    // audb refuses with ApplicationAlreadyRunning; raise the existing window
+    // instead so `app(action:'launch')` is idempotent.
+    if (this.listRunningApps().some((app) => app.package === packageName)) {
+      if (this.activateApp(packageName)) return `Activated ${packageName}`;
+    }
     const output = this.runAudbSync(["launch", packageName]);
     return output || `Launched ${packageName}`;
+  }
+
+  /**
+   * Bring an already-running application to the foreground.
+   *
+   * `audb launch` cannot activate a running app, and lipstick exposes its
+   * window model on the session bus.
+   */
+  activateApp(packageName: string): boolean {
+    validatePackageName(packageName);
+    const command = [
+      "export DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u)/dbus/user_bus_socket",
+      `gdbus call --session --dest org.nemomobile.lipstick --object-path /WindowModel --method local.Lipstick.WindowModel.launchProcess "${packageName}"`,
+    ].join("; ");
+    try {
+      this.shell(command);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   /**
