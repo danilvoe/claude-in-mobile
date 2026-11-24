@@ -39,7 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   elements on the reference app).
 - Flutter discovery distinguishes `VM_SERVICE_TOKEN_LOST` (service socket still
   open, auth token rotated out of the journal) from
-  `VM_SERVICE_NOT_DISCOVERED`, so the agent knows a relaunch is required.
+  `VM_SERVICE_NOT_DISCOVERED`, so the agent knows a relaunch is required. A
+  live VM Service session is reused without re-reading the journal (~110 ms
+  fresh dumps after the first).
 - `aurora_ui_setup({ restartApp: true })` waits for the app to stop before
   relaunching; RuntimeManager stops asynchronously, so the immediate launch
   failed with `ApplicationAlreadyRunning`.

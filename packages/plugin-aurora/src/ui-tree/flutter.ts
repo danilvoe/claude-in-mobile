@@ -84,6 +84,16 @@ export class FlutterUiTreeBackend {
 
   async getSnapshot(packageName: string, pid: number): Promise<UiTreeSnapshot> {
     const resolvedPid = this.isFlutterProcess(pid) ? pid : (this.resolveAppPid(pid) ?? pid);
+
+    // A live VM Service session outlives the journal line that announced it.
+    if (this.session && this.session.pid === resolvedPid && this.session.client.connected) {
+      try {
+        return await this.dumpWithSession(this.session, packageName);
+      } catch {
+        this.disposeSession();
+      }
+    }
+
     try {
       const first = await this.tryGetSnapshot(packageName, resolvedPid);
       if (first) return first;
@@ -150,43 +160,7 @@ export class FlutterUiTreeBackend {
 
     try {
       const session = await this.ensureSession(location.pid, location);
-      const isolateId = session.isolateId ?? await this.withTimeout(
-        session.client.getMainIsolateId(),
-        "Flutter VM Service isolate discovery timed out.",
-      );
-      session.isolateId = isolateId;
-
-      const dump = await this.withTimeout(
-        session.client.dumpSemantics(isolateId),
-        "Flutter semantics dump timed out.",
-      );
-      const semantics = parseSemanticsDump(dump);
-      if (semantics.length === 0) {
-        throw new UiTreeUnavailableError(
-          "Flutter returned an empty semantics tree.",
-          "SEMANTICS_EMPTY",
-        );
-      }
-
-      const screen = this.client.getScreenshotGeometry();
-      const nodes = semanticsToUiNodes(semantics, screen, packageName);
-      if (nodes.length === 0) {
-        throw new UiTreeUnavailableError(
-          "Flutter semantics contained no actionable nodes.",
-          "SEMANTICS_NO_ACTIONABLE_NODES",
-        );
-      }
-
-      return {
-        backend: "flutter",
-        packageName,
-        screen,
-        nodes,
-        metadata: {
-          vmServicePort: location.port,
-          semanticsNodes: semantics.length,
-        },
-      };
+      return await this.dumpWithSession(session, packageName);
     } catch (error) {
       // A stale VM Service port/token after an app restart is the common case.
       this.disposeSession();
@@ -196,6 +170,46 @@ export class FlutterUiTreeBackend {
         "FLUTTER_UI_TREE_FAILED",
       );
     }
+  }
+
+  private async dumpWithSession(session: CachedSession, packageName: string): Promise<UiTreeSnapshot> {
+    const isolateId = session.isolateId ?? await this.withTimeout(
+      session.client.getMainIsolateId(),
+      "Flutter VM Service isolate discovery timed out.",
+    );
+    session.isolateId = isolateId;
+
+    const dump = await this.withTimeout(
+      session.client.dumpSemantics(isolateId),
+      "Flutter semantics dump timed out.",
+    );
+    const semantics = parseSemanticsDump(dump);
+    if (semantics.length === 0) {
+      throw new UiTreeUnavailableError(
+        "Flutter returned an empty semantics tree.",
+        "SEMANTICS_EMPTY",
+      );
+    }
+
+    const screen = this.client.getScreenshotGeometry();
+    const nodes = semanticsToUiNodes(semantics, screen, packageName);
+    if (nodes.length === 0) {
+      throw new UiTreeUnavailableError(
+        "Flutter semantics contained no actionable nodes.",
+        "SEMANTICS_NO_ACTIONABLE_NODES",
+      );
+    }
+
+    return {
+      backend: "flutter",
+      packageName,
+      screen,
+      nodes,
+      metadata: {
+        vmServicePort: session.vmPort,
+        semanticsNodes: semantics.length,
+      },
+    };
   }
 
   private async ensureSession(pid: number, location: VmServiceLocation): Promise<CachedSession> {
