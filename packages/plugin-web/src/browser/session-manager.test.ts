@@ -95,6 +95,72 @@ describe("SessionManager profile ownership", () => {
     expect(token).not.toBe("stale");
     sessions.releaseLock("stale", token);
   });
+
+  it("reclaims a lock whose live owner lost its Chrome", () => {
+    const sessions = manager();
+    const harness = sessions as unknown as SessionManagerHarness;
+    const session = "crashed-browser";
+    writeFileSync(
+      harness.lockPath(session),
+      JSON.stringify({ pid: process.pid, token: "owner-token" }),
+    );
+    writeFileSync(
+      join(sessions.getProfileDir(session), ".chrome-pid"),
+      JSON.stringify({ pid: 2_147_483_647, token: "owner-token" }),
+    );
+
+    const token = sessions.acquireLock(session);
+
+    expect(token).not.toBe("owner-token");
+    sessions.releaseLock(session, token);
+  });
+
+  it("refuses a live owner whose Chrome is still running", () => {
+    const sessions = manager();
+    const harness = sessions as unknown as SessionManagerHarness;
+    const session = "live-browser";
+    writeFileSync(
+      harness.lockPath(session),
+      JSON.stringify({ pid: process.pid, token: "owner-token" }),
+    );
+    writeFileSync(
+      join(sessions.getProfileDir(session), ".chrome-pid"),
+      JSON.stringify({ pid: process.pid, token: "owner-token" }),
+    );
+
+    expect(() => sessions.acquireLock(session)).toThrow(`live PID ${process.pid}`);
+  });
+
+  it("does not reclaim a live owner whose Chrome record belongs to another claim", () => {
+    const sessions = manager();
+    const harness = sessions as unknown as SessionManagerHarness;
+    const session = "claim-in-progress";
+    writeFileSync(
+      harness.lockPath(session),
+      JSON.stringify({ pid: process.pid, token: "fresh-token" }),
+    );
+    writeFileSync(
+      join(sessions.getProfileDir(session), ".chrome-pid"),
+      JSON.stringify({ pid: 2_147_483_647, token: "old-token" }),
+    );
+
+    expect(() => sessions.acquireLock(session)).toThrow(`live PID ${process.pid}`);
+  });
+
+  it("reclaims a legacy lock whose live owner lost its Chrome", () => {
+    const sessions = manager();
+    const session = "legacy-crashed";
+    const profileDir = sessions.getProfileDir(session);
+    writeFileSync(join(profileDir, ".lock"), String(process.pid));
+    writeFileSync(
+      join(profileDir, ".chrome-pid"),
+      JSON.stringify({ pid: 2_147_483_647, token: "owner-token" }),
+    );
+
+    const token = sessions.acquireLock(session);
+
+    sessions.releaseLock(session, token);
+  });
   it.skipIf(process.platform === "win32")(
     "replaces a symlinked pid record without overwriting its target",
     () => {

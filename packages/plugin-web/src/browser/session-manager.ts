@@ -146,7 +146,11 @@ export class SessionManager {
   }
 
   readPidFile(session: string): PidRecord | null {
-    return this.parseLock(this.readFile(join(this.getProfileDir(session), ".chrome-pid")));
+    return this.readPidRecord(this.getProfileDir(session));
+  }
+
+  private readPidRecord(profileDir: string): PidRecord | null {
+    return this.parseLock(this.readFile(join(profileDir, ".chrome-pid")));
   }
 
   removePidFile(session: string, token: string): void {
@@ -225,7 +229,8 @@ export class SessionManager {
 
         const observed = this.readFile(lockPath);
         const owner = this.parseLock(observed);
-        if (owner && this.isProcessAlive(owner.pid)) {
+        const profileDir = this.profilePath(session);
+        if (owner && this.isLockOwnerActive(owner, profileDir)) {
           throw new Error(
             `Browser profile for session "${session}" is owned by live PID ${owner.pid}`,
           );
@@ -236,11 +241,12 @@ export class SessionManager {
           const confirmed = this.readFile(lockPath);
           if (confirmed !== observed) continue;
           const confirmedOwner = this.parseLock(confirmed);
-          if (confirmedOwner && this.isProcessAlive(confirmedOwner.pid)) {
+          if (confirmedOwner && this.isLockOwnerActive(confirmedOwner, profileDir)) {
             throw new Error(
               `Browser profile for session "${session}" is owned by live PID ${confirmedOwner.pid}`,
             );
           }
+          this.reportStaleOwner(session, confirmedOwner, profileDir);
           try {
             unlinkSync(lockPath);
           } catch (error) {
@@ -365,11 +371,12 @@ export class SessionManager {
       }
       const observed = this.readFile(legacyPath);
       const owner = this.parseLock(observed);
-      if (owner && this.isProcessAlive(owner.pid)) {
+      if (owner && this.isLockOwnerActive(owner, legacyProfile)) {
         throw new Error(
           `Browser profile for session "${session}" is owned by live PID ${owner.pid}`,
         );
       }
+      this.reportStaleOwner(session, owner, legacyProfile);
       if (this.readFile(legacyPath) !== observed) continue;
       try { unlinkSync(legacyPath); } catch {}
       if (!shouldClaim) return;
@@ -425,6 +432,35 @@ export class SessionManager {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * A live owner PID alone must not block the profile. The MCP server can
+   * outlive the Chrome instance it launched (the browser crashed or was
+   * killed), and PIDs get recycled. `.chrome-pid` is written with the same
+   * token as the lock, so a matching record with a dead Chrome proves the
+   * owner already lost its browser and the profile is free to reclaim.
+   */
+  private isLockOwnerActive(owner: LockRecord, profileDir: string): boolean {
+    if (!this.isProcessAlive(owner.pid)) return false;
+    const chrome = this.readPidRecord(profileDir);
+    if (!chrome || this.isProcessAlive(chrome.pid)) return true;
+    // Legacy plain-PID locks carry no token to compare against, but the
+    // primary lock already arbitrates cross-process claims for that session.
+    return owner.token !== "legacy" && chrome.token !== owner.token;
+  }
+
+  private reportStaleOwner(
+    session: string,
+    owner: LockRecord | null,
+    profileDir: string,
+  ): void {
+    if (!owner || !this.isProcessAlive(owner.pid)) return;
+    const chrome = this.readPidRecord(profileDir);
+    if (!chrome || this.isProcessAlive(chrome.pid)) return;
+    console.error(
+      `[browser] Reclaimed stale profile lock for session "${sanitizeErrorMessage(session)}": owner PID ${owner.pid} is alive but Chrome PID ${chrome.pid} is gone`,
+    );
   }
 
   private readFile(filePath: string): string | null {

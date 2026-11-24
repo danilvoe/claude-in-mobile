@@ -8,9 +8,10 @@ const MAX_INTERACTIVE_REFS = 200;
 const MAX_SNAPSHOT_LINES = 1000;
 const MAX_SNAPSHOT_CHARS = 1024 * 1024;
 const cdpValueSchema = z.object({
-  type: z.enum(["string", "computedString"]),
+  type: z.string().min(1).max(64),
   value: z.string().max(64 * 1024),
 }).passthrough();
+const AX_ROLE_TYPE = "role";
 const runtimeStringResultSchema = z.object({
   result: z.object({
     value: z.string().max(8192).regex(/^[^\u0000-\u001f\u007f]*$/),
@@ -52,6 +53,18 @@ function formatValue(value: unknown): string | undefined {
   return parsed.success ? parsed.data.value : undefined;
 }
 
+/**
+ * CDP wraps ARIA roles as `{ type: "role", value: "button" }`, while names and
+ * values use `computedString`/`string`. Internal roles (`InlineTextBox`,
+ * `StaticText`, ...) duplicate the semantic tree, so only real AX roles are
+ * projected into the snapshot.
+ */
+function formatRole(value: unknown): string | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  if ((value as { type?: unknown }).type !== AX_ROLE_TYPE) return undefined;
+  return formatValue(value);
+}
+
 export async function buildSnapshot(
   session: BrowserSession,
   cdp: CDPClientInterface
@@ -71,10 +84,11 @@ export async function buildSnapshot(
   let snapshotChars = 0;
 
   const nodeLimit = Math.min(axNodes.length, MAX_AX_NODES);
+  let documentRequested = false;
   for (let nodeIndex = 0; nodeIndex < nodeLimit; nodeIndex++) {
     const node = axNodes[nodeIndex];
     if (node.ignored) continue;
-    const role = formatValue(node.role) ?? "";
+    const role = formatRole(node.role) ?? "";
     if (!role || role === "none" || role === "generic" || role === "InlineTextBox") continue;
 
     const name = formatValue(node.name) ?? "";
@@ -91,6 +105,12 @@ export async function buildSnapshot(
       let selector = "";
       if (node.backendDOMNodeId) {
         try {
+          // DOM.pushNodesByBackendIdsToFrontend is rejected with "Document
+          // needs to be requested first" until the DOM agent has a document.
+          if (!documentRequested) {
+            await cdp.DOM.getDocument({ depth: 0 });
+            documentRequested = true;
+          }
           const { nodeIds } = await cdp.DOM.pushNodesByBackendIdsToFrontend({
             backendNodeIds: [node.backendDOMNodeId],
           });
@@ -141,7 +161,9 @@ export async function buildSnapshot(
 
   const header = `[${title || "Untitled"}] ${session.url}\n\n`;
   const body = snapshotLines.join("\n") || "(no interactive elements found)";
-  const hint = `\n\n--- ${session.refMap.size} interactive elements, refs e1..e${session.lastRefCounter} ---`;
+  const hint = session.refMap.size > 0
+    ? `\n\n--- ${session.refMap.size} interactive elements, refs e1..e${session.lastRefCounter} ---`
+    : "\n\n--- 0 interactive elements ---";
 
   return header + body + hint;
 }
