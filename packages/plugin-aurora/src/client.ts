@@ -122,6 +122,9 @@ function parseAudbData(output: string): unknown {
 }
 
 export class AuroraClient {
+  /** Key names Aurora resolves to its navigation gesture instead of a key event. */
+  private static readonly BACK_KEYS = new Set(["back"]);
+
   private readonly stateCache = new Map<string, DeviceStateCacheEntry>();
   private geometryCache?: { value: ScreenshotGeometry; at: number };
 
@@ -618,9 +621,20 @@ export class AuroraClient {
 
   /**
    * Sends a keyboard key event to the device.
-   * @param key - Key name to send (e.g., "Enter", "Back", "Home")
+   *
+   * Aurora has no BACK key: `audb key back` is rejected with
+   * "Unsupported key name". Back is the system navigation gesture, so "Back"
+   * is translated to `audb swipe edge-right` (edge swipe from the left
+   * border), which pops the page stack in both Qt/Silica and Flutter apps.
+   *
+   * @param key - Key name to send (e.g., "Enter", "Home"); "Back" maps to the
+   *   system edge swipe instead of a key event.
    */
   pressKey(key: string): void {
+    if (AuroraClient.BACK_KEYS.has(key.toLowerCase())) {
+      this.runAudbSync(["swipe", "edge-right"]);
+      return;
+    }
     this.runAudbSync(["key", key]);
   }
 

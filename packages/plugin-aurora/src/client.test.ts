@@ -297,3 +297,60 @@ describeUnix("AuroraClient — logs and crash list argv", () => {
     expect(existsSync(argsFile)).toBe(false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// pressKey — Aurora has no BACK key, so it maps to the system edge swipe
+// ---------------------------------------------------------------------------
+
+describeUnix("AuroraClient — pressKey", () => {
+  let workDir: string;
+  let argsFile: string;
+  let savedPath: string | undefined;
+
+  function installFakeAudb(): void {
+    const fakeAudb = join(workDir, "audb");
+    writeFileSync(fakeAudb, `#!/bin/sh\nprintf '%s\\n' "$@" > "${argsFile}"\nexit 0\n`);
+    chmodSync(fakeAudb, 0o755);
+  }
+
+  function readArgs(): string[] {
+    return readFileSync(argsFile, "utf-8").trimEnd().split("\n");
+  }
+
+  beforeEach(() => {
+    workDir = mkdtempSync(join(tmpdir(), "cim-aurora-key-"));
+    argsFile = join(workDir, "args.txt");
+    savedPath = process.env.PATH;
+    process.env.PATH = `${workDir}${delimiter}${savedPath ?? ""}`;
+  });
+
+  afterEach(() => {
+    if (savedPath === undefined) delete process.env.PATH;
+    else process.env.PATH = savedPath;
+    rmSync(workDir, { recursive: true, force: true });
+  });
+
+  it("maps BACK to the system edge swipe instead of `audb key`", () => {
+    installFakeAudb();
+
+    new AuroraClient().pressKey("BACK");
+
+    expect(readArgs()).toEqual(["swipe", "edge-right"]);
+  });
+
+  it("maps any casing of back to the edge swipe", () => {
+    installFakeAudb();
+
+    new AuroraClient().pressKey("Back");
+
+    expect(readArgs()).toEqual(["swipe", "edge-right"]);
+  });
+
+  it("forwards ordinary keys to `audb key` unchanged", () => {
+    installFakeAudb();
+
+    new AuroraClient().pressKey("ENTER");
+
+    expect(readArgs()).toEqual(["key", "ENTER"]);
+  });
+});
